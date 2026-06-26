@@ -100,17 +100,108 @@ label input, label select { margin-top: 2px; }
 }
 
 .fx-btn {
+  position: relative;
   padding: 3px 9px;
   font-size: 10px;
   border-radius: 3px;
   white-space: nowrap;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 .fx-btn.active {
   background: var(--accent);
   color: #000;
   border-color: var(--accent);
 }
+.fx-btn.capturing {
+  border-color: #fa0;
+  background: #1a1000;
+  animation: pulse-border 0.8s ease-in-out infinite;
+}
+@keyframes pulse-border {
+  0%, 100% { border-color: #fa0; }
+  50%       { border-color: #f60; }
+}
+
+/* Shortcut key badges on effect buttons */
+kbd.shortcut-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 2px;
+  background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(255,255,255,0.18);
+  color: inherit;
+  min-width: 12px;
+  opacity: 0.85;
+  pointer-events: none;
+}
+.fx-btn.active kbd.shortcut-badge {
+  background: rgba(0,0,0,0.25);
+  border-color: rgba(0,0,0,0.3);
+}
+kbd.shortcut-badge.capturing {
+  background: #fa0;
+  color: #000;
+  border-color: #f60;
+  opacity: 1;
+}
+
+/* Capture banner */
+.capture-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  background: #1a1000;
+  border-bottom: 1px solid #fa0;
+  font-size: 11px;
+  color: #fa0;
+  flex-shrink: 0;
+}
+.capture-banner strong { color: #fff; }
+.capture-clear {
+  color: var(--text-dim);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.capture-clear:hover { color: var(--danger); }
+.capture-esc { margin-left: auto; color: var(--text-dim); font-size: 10px; }
+
+/* Shortcut legend bar */
+.shortcut-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 12px;
+  background: var(--bg0);
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.shortcut-legend::-webkit-scrollbar { display: none; }
+.shortcut-legend kbd {
+  font-family: inherit;
+  font-size: 9px;
+  padding: 1px 4px;
+  background: var(--bg3);
+  border: 1px solid #444;
+  border-radius: 3px;
+  color: var(--text);
+  margin-right: 2px;
+}
+.shortcut-legend small { opacity: 0.6; }
+.legend-hint { margin-left: auto; font-style: italic; flex-shrink: 0; }
 
 .main-area { display: flex; flex: 1; overflow: hidden; }
 
