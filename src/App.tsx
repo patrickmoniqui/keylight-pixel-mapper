@@ -12,6 +12,7 @@ export default function App() {
   const output = useStore((s) => s.output);
   const selectedIds = useStore((s) => s.selectedStripIds);
   const setFps = useStore((s) => s.setFps);
+  const setBpm = useStore((s) => s.setBpm);
   const updateStrip = useStore((s) => s.updateStrip);
   const setSelectedStrips = useStore((s) => s.setSelectedStrips);
   const removeStrip = useStore((s) => s.removeStrip);
@@ -20,6 +21,7 @@ export default function App() {
   const setOutput = useStore((s) => s.setOutput);
   const effectShortcuts = useStore((s) => s.effectShortcuts);
   const effectParams = useStore((s) => s.effectParams);
+  const audioDeviceId = useStore((s) => s.audioDeviceId);
   const showGrid = useStore((s) => s.showGrid);
   const toggleGrid = useStore((s) => s.toggleGrid);
   const targetFps = useStore((s) => s.targetFps);
@@ -144,6 +146,7 @@ export default function App() {
             effectParams={effectParams}
             outputEnabled={output.enabled}
             onFps={setFps}
+            onBpm={setBpm}
             selectedStripIds={selectedIds}
             onSelectStrips={setSelectedStrips}
             onUpdateStrip={updateStrip}
@@ -151,6 +154,7 @@ export default function App() {
             onSnapshot={snapshotStrips}
             showGrid={showGrid}
             targetFps={targetFps}
+            audioDeviceId={audioDeviceId}
           />
         </div>
         <PropertiesPanel />

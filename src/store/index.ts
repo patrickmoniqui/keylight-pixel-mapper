@@ -28,7 +28,9 @@ interface AppState {
   activeEffect: string;
   output: OutputConfig;
   fps: number;
+  bpm: number;
   effectShortcuts: Record<string, string>;
+  effectParams: Record<string, Record<string, string | number>>;
   showGrid: boolean;
   targetFps: number;
 
@@ -44,9 +46,14 @@ interface AppState {
   setActiveEffect: (effect: string) => void;
   setOutput: (updates: Partial<OutputConfig>) => void;
   setFps: (fps: number) => void;
+  setBpm: (bpm: number) => void;
   setEffectShortcut: (effect: string, key: string | null) => void;
   toggleGrid: () => void;
   setTargetFps: (fps: number) => void;
+  setEffectParam: (effect: string, key: string, value: string | number) => void;
+  audioDeviceId: string;
+  setAudioDeviceId: (id: string) => void;
+  loadStrips: (strips: Strip[]) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -63,9 +70,12 @@ export const useStore = create<AppState>()(
         broadcastAddress: '255.255.255.255',
       },
       fps: 0,
+      bpm: 0,
       effectShortcuts: DEFAULT_SHORTCUTS,
+      effectParams: {} as Record<string, Record<string, string | number>>,
       showGrid: false,
       targetFps: 30,
+      audioDeviceId: '',
 
       addStrip: (strip) =>
         set((s) => ({
@@ -149,6 +159,7 @@ export const useStore = create<AppState>()(
       setActiveEffect: (effect) => set({ activeEffect: effect }),
       setOutput: (updates) => set((s) => ({ output: { ...s.output, ...updates } })),
       setFps: (fps) => set({ fps }),
+      setBpm: (bpm) => set({ bpm }),
 
       setEffectShortcut: (effect, key) =>
         set((s) => {
@@ -161,6 +172,21 @@ export const useStore = create<AppState>()(
 
       toggleGrid: () => set((s) => ({ showGrid: !s.showGrid })),
       setTargetFps: (fps) => set({ targetFps: fps }),
+      setAudioDeviceId: (id) => set({ audioDeviceId: id }),
+      loadStrips: (strips) =>
+        set((s) => ({
+          past: pushPast(s.past, s.strips),
+          future: [],
+          strips,
+          selectedStripIds: [],
+        })),
+      setEffectParam: (effect, key, value) =>
+        set((s) => ({
+          effectParams: {
+            ...s.effectParams,
+            [effect]: { ...s.effectParams[effect], [key]: value },
+          },
+        })),
     }),
     {
       name: 'keylight-pixel-mapper',
@@ -171,6 +197,8 @@ export const useStore = create<AppState>()(
         effectShortcuts: state.effectShortcuts,
         showGrid: state.showGrid,
         targetFps: state.targetFps,
+        effectParams: state.effectParams,
+        audioDeviceId: state.audioDeviceId,
         // past/future not persisted — history doesn't survive restarts
       }),
     }

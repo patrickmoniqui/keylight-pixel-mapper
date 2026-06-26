@@ -15,6 +15,7 @@ interface Props {
   effectParams: Record<string, Record<string, string | number>>;
   outputEnabled: boolean;
   onFps: (fps: number) => void;
+  onBpm: (bpm: number) => void;
   selectedStripIds: string[];
   onSelectStrips: (ids: string[]) => void;
   onUpdateStrip: (id: string, updates: Partial<Strip>) => void;
@@ -22,6 +23,7 @@ interface Props {
   onSnapshot: () => void;
   showGrid: boolean;
   targetFps: number;
+  audioDeviceId: string;
 }
 
 // ─── WebGL helpers ────────────────────────────────────────────────────────────
@@ -186,6 +188,7 @@ export function PixelCanvas({
   effectParams,
   outputEnabled,
   onFps,
+  onBpm,
   selectedStripIds,
   onSelectStrips,
   onUpdateStrip,
@@ -193,6 +196,7 @@ export function PixelCanvas({
   onSnapshot,
   showGrid,
   targetFps,
+  audioDeviceId,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -201,6 +205,16 @@ export function PixelCanvas({
   const audioRef = useRef<{ analyser: AnalyserNode; data: Uint8Array<ArrayBuffer>; texture: WebGLTexture } | null>(null);
   const rafRef = useRef<number>(0);
   const fpsRef = useRef({ frames: 0, last: performance.now() });
+  const bpmRef = useRef({
+    energyHistory: new Float32Array(43),
+    histIdx: 0,
+    lastBeatTime: 0,
+    beatIntervals: [] as number[],
+    beat: 0,
+    bpm: 0,
+  });
+  const onBpmRef = useRef(onBpm);
+  onBpmRef.current = onBpm;
   const dragRef = useRef<DragState | null>(null);
   const [dragType, setDragType] = useState<DragType | null>(null);
 
@@ -209,7 +223,10 @@ export function PixelCanvas({
   useEffect(() => {
     if (!isReactiveEffect) return;
     let ctx: AudioContext;
-    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+    const constraints: MediaStreamConstraints = audioDeviceId
+      ? { audio: { deviceId: { exact: audioDeviceId } } }
+      : { audio: true };
+    navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
       ctx = new AudioContext();
       const source = ctx.createMediaStreamSource(stream);
       const analyser = ctx.createAnalyser();
@@ -226,7 +243,7 @@ export function PixelCanvas({
       audioRef.current = { analyser, data, texture };
     }).catch(() => {});
     return () => { audioRef.current = null; ctx?.close(); };
-  }, [isReactiveEffect]);
+  }, [isReactiveEffect, audioDeviceId]);
 
   // ── WebGL init ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -295,8 +312,41 @@ export function PixelCanvas({
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, texture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, data.length, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
-        const loc = gl.getUniformLocation(prog, 'u_audio');
-        if (loc) gl.uniform1i(loc, 0);
+        const audioLoc = gl.getUniformLocation(prog, 'u_audio');
+        if (audioLoc) gl.uniform1i(audioLoc, 0);
+
+        // BPM detection via bass energy (bins 0-3 ≈ 0-1000 Hz)
+        const bpm = bpmRef.current;
+        let bassEnergy = 0;
+        for (let i = 0; i < 4; i++) bassEnergy += data[i] / 255;
+        bassEnergy /= 4;
+        bpm.energyHistory[bpm.histIdx] = bassEnergy;
+        bpm.histIdx = (bpm.histIdx + 1) % bpm.energyHistory.length;
+        let avgEnergy = 0;
+        for (let i = 0; i < bpm.energyHistory.length; i++) avgEnergy += bpm.energyHistory[i];
+        avgEnergy /= bpm.energyHistory.length;
+
+        const nowMs = performance.now();
+        const timeSinceBeat = nowMs - bpm.lastBeatTime;
+        if (bassEnergy > avgEnergy * 1.4 && bassEnergy > 0.1 && timeSinceBeat > 250) {
+          if (bpm.lastBeatTime > 0 && timeSinceBeat < 2000) {
+            bpm.beatIntervals.push(timeSinceBeat);
+            if (bpm.beatIntervals.length > 8) bpm.beatIntervals.shift();
+            if (bpm.beatIntervals.length >= 2) {
+              const avgInterval = bpm.beatIntervals.reduce((a, b) => a + b) / bpm.beatIntervals.length;
+              const newBpm = Math.round(60000 / avgInterval);
+              if (newBpm !== bpm.bpm) { bpm.bpm = newBpm; onBpmRef.current(newBpm); }
+            }
+          }
+          bpm.lastBeatTime = nowMs;
+          bpm.beat = 1.0;
+        }
+        bpm.beat *= 0.88;
+
+        const beatLoc = gl.getUniformLocation(prog, 'u_beat');
+        if (beatLoc) gl.uniform1f(beatLoc, bpm.beat);
+        const bpmLoc = gl.getUniformLocation(prog, 'u_bpm');
+        if (bpmLoc) gl.uniform1f(bpmLoc, bpm.bpm);
       }
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       const now = performance.now();

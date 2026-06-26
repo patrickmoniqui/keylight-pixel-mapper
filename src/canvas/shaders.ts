@@ -47,6 +47,8 @@ function frag(body: string, utils = '', extraUniforms = ''): string {
   return `#version 300 es
 precision highp float;
 uniform float u_time;
+uniform float u_beat;
+uniform float u_bpm;
 uniform sampler2D u_audio;
 ${extraUniforms}
 in vec2 v_uv;
@@ -332,18 +334,18 @@ export const EFFECTS: Record<string, EffectDef> = {
     category: 'Reactive',
     frag: frag(`
   float bass = pow(texture(u_audio, vec2(0.04, 0.5)).r, 1.5);
-  float hue = fract(u_time * 0.07 + bass * 0.2);
-  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, bass)), 1.0);`, H),
+  float pulse = max(bass, u_beat);
+  float hue = fract(u_time * 0.07 + pulse * 0.2);
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, pulse)), 1.0);`, H),
   },
 
   beatFlash: {
     label: 'Beat Flash',
     category: 'Reactive',
     frag: frag(`
-  float bass = pow(texture(u_audio, vec2(0.05, 0.5)).r, 2.0);
   float hue = fract(floor(u_time * 3.0) * 0.37);
-  float sat = 1.0 - bass * 0.5;
-  fragColor = vec4(hsv2rgb(vec3(hue, sat, bass)), 1.0);`, H),
+  float sat = 1.0 - u_beat * 0.5;
+  fragColor = vec4(hsv2rgb(vec3(hue, sat, u_beat)), 1.0);`, H),
   },
 
   vuMeter: {

@@ -350,6 +350,39 @@ kbd.shortcut-badge.capturing {
   margin: 4px 0;
 }
 
+/* BPM display */
+.bpm-display {
+  font-size: 11px;
+  font-weight: 600;
+  color: #0f0;
+  min-width: 52px;
+  text-align: right;
+  letter-spacing: 0.03em;
+}
+
+/* Mic input bar */
+.mic-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 12px;
+  background: #0a0a14;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.mic-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.mic-select {
+  width: auto;
+  max-width: 280px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+
 /* Effect parameter bar */
 .effect-params-bar {
   display: flex;

@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { EFFECTS, EFFECT_CATEGORIES } from '../canvas/shaders';
 import { EffectParams } from './EffectParams';
+import { Strip } from '../fixtures/types';
 
 const RESERVED = new Set(['Escape', 'Delete', 'Backspace', ' ', 'Tab',
   'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12']);
@@ -14,24 +15,48 @@ function keyLabel(key: string): string {
 }
 
 export function Toolbar() {
-  const activeEffect = useStore((s) => s.activeEffect);
-  const setActiveEffect = useStore((s) => s.setActiveEffect);
-  const output = useStore((s) => s.output);
-  const setOutput = useStore((s) => s.setOutput);
-  const fps = useStore((s) => s.fps);
-  const effectShortcuts = useStore((s) => s.effectShortcuts);
+  const strips        = useStore((s) => s.strips);
+  const loadStrips    = useStore((s) => s.loadStrips);
+  const activeEffect  = useStore((s) => s.setActiveEffect);
+  const active        = useStore((s) => s.activeEffect);
+  const setActiveEffect = activeEffect;
+  const output        = useStore((s) => s.output);
+  const setOutput     = useStore((s) => s.setOutput);
+  const fps           = useStore((s) => s.fps);
+  const bpm           = useStore((s) => s.bpm);
+  const effectShortcuts  = useStore((s) => s.effectShortcuts);
   const setEffectShortcut = useStore((s) => s.setEffectShortcut);
-  const showGrid = useStore((s) => s.showGrid);
-  const toggleGrid = useStore((s) => s.toggleGrid);
-  const targetFps = useStore((s) => s.targetFps);
-  const setTargetFps = useStore((s) => s.setTargetFps);
-  const canUndo = useStore((s) => s.past.length > 0);
-  const canRedo = useStore((s) => s.future.length > 0);
-  const undo = useStore((s) => s.undo);
-  const redo = useStore((s) => s.redo);
+  const showGrid      = useStore((s) => s.showGrid);
+  const toggleGrid    = useStore((s) => s.toggleGrid);
+  const targetFps     = useStore((s) => s.targetFps);
+  const setTargetFps  = useStore((s) => s.setTargetFps);
+  const audioDeviceId = useStore((s) => s.audioDeviceId);
+  const setAudioDeviceId = useStore((s) => s.setAudioDeviceId);
+  const canUndo       = useStore((s) => s.past.length > 0);
+  const canRedo       = useStore((s) => s.future.length > 0);
+  const undo          = useStore((s) => s.undo);
+  const redo          = useStore((s) => s.redo);
 
   const [capturing, setCapturing] = useState<string | null>(null);
+  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
+  const importRef = useRef<HTMLInputElement>(null);
 
+  const isReactive = EFFECTS[active]?.category === 'Reactive';
+
+  // Enumerate microphone devices when a Reactive effect is active
+  useEffect(() => {
+    if (!isReactive) { setMicDevices([]); return; }
+    const enumerate = () =>
+      navigator.mediaDevices.enumerateDevices()
+        .then((devs) => setMicDevices(devs.filter((d) => d.kind === 'audioinput')))
+        .catch(() => {});
+    enumerate();
+    // Re-enumerate after 1 s to pick up labels once mic permission is granted
+    const t = setTimeout(enumerate, 1000);
+    return () => clearTimeout(t);
+  }, [isReactive]);
+
+  // Shortcut capture keyboard handler
   useEffect(() => {
     if (!capturing) return;
     const handler = (e: KeyboardEvent) => {
@@ -62,6 +87,35 @@ export function Toolbar() {
   const setProtocol = (protocol: 'artnet' | 'sacn' | 'both') => {
     setOutput({ protocol });
     (window as any).electronAPI?.setOutputConfig({ ...output, protocol });
+  };
+
+  // ── Export patch ─────────────────────────────────────────────────────────
+  const exportPatch = () => {
+    const json = JSON.stringify(strips, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'keylight-patch.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── Import patch ─────────────────────────────────────────────────────────
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target?.result as string);
+        if (Array.isArray(data) && data.length > 0 && 'id' in data[0]) {
+          loadStrips(data as Strip[]);
+        }
+      } catch {}
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   return (
@@ -97,13 +151,11 @@ export function Toolbar() {
         <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">↩ Undo</button>
         <button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)">↪ Redo</button>
         <div className="divider" />
-        <button
-          className={showGrid ? 'active' : ''}
-          onClick={toggleGrid}
-          title="Toggle grid (G)"
-        >
-          ⊞ Grid
-        </button>
+        <button className={showGrid ? 'active' : ''} onClick={toggleGrid} title="Toggle grid (G)">⊞ Grid</button>
+        <div className="divider" />
+        <button onClick={exportPatch} title="Export fixtures to JSON">⬇ Export</button>
+        <button onClick={() => importRef.current?.click()} title="Import fixtures from JSON">⬆ Import</button>
+        <input ref={importRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImport} />
         <div className="divider" />
         <label className="fps-label">
           Out
@@ -118,8 +170,27 @@ export function Toolbar() {
             ))}
           </select>
         </label>
+        {bpm > 0 && <span className="bpm-display">{bpm} BPM</span>}
         <div className="fps">{fps} fps</div>
       </div>
+
+      {isReactive && micDevices.length > 0 && (
+        <div className="mic-bar">
+          <span className="mic-label">Mic</span>
+          <select
+            className="mic-select"
+            value={audioDeviceId}
+            onChange={(e) => setAudioDeviceId(e.target.value)}
+          >
+            <option value="">Default</option>
+            {micDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label || `Microphone ${d.deviceId.slice(0, 6)}`}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="effects-bar">
         {EFFECT_CATEGORIES.map((cat) => {
@@ -133,7 +204,7 @@ export function Toolbar() {
                 return (
                   <button
                     key={id}
-                    className={`fx-btn ${activeEffect === id ? 'active' : ''} ${isCapturing ? 'capturing' : ''}`}
+                    className={`fx-btn ${active === id ? 'active' : ''} ${isCapturing ? 'capturing' : ''}`}
                     onClick={() => { setCapturing(null); setActiveEffect(id); }}
                     onContextMenu={(e) => { e.preventDefault(); setCapturing((p) => p === id ? null : id); }}
                     title={`${def.label}${shortcut ? ` [${keyLabel(shortcut)}]` : ''}\nRight-click to assign shortcut`}
