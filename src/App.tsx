@@ -21,6 +21,7 @@ export default function App() {
   const effectShortcuts = useStore((s) => s.effectShortcuts);
   const showGrid = useStore((s) => s.showGrid);
   const toggleGrid = useStore((s) => s.toggleGrid);
+  const targetFps = useStore((s) => s.targetFps);
   const snapshotStrips = useStore((s) => s.snapshotStrips);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -147,6 +148,7 @@ export default function App() {
             onStripDrop={handleStripDrop}
             onSnapshot={snapshotStrips}
             showGrid={showGrid}
+            targetFps={targetFps}
           />
         </div>
         <PropertiesPanel />

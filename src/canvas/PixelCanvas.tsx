@@ -15,6 +15,7 @@ interface Props {
   onStripDrop: (id: string, x: number, y: number) => void;
   onSnapshot: () => void;
   showGrid: boolean;
+  targetFps: number;
 }
 
 // ─── WebGL helpers ────────────────────────────────────────────────────────────
@@ -184,6 +185,7 @@ export function PixelCanvas({
   onStripDrop,
   onSnapshot,
   showGrid,
+  targetFps,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -238,9 +240,12 @@ export function PixelCanvas({
   const stripsRef = useRef(strips);
   const effectRef = useRef(activeEffect);
   const outputRef = useRef(outputEnabled);
+  const targetFpsRef = useRef(targetFps);
+  const lastOutputTimeRef = useRef(0);
   stripsRef.current = strips;
   effectRef.current = activeEffect;
   outputRef.current = outputEnabled;
+  targetFpsRef.current = targetFps;
 
   const startLoop = useCallback(() => {
     const gl = glRef.current;
@@ -269,7 +274,16 @@ export function PixelCanvas({
         if (loc) gl.uniform1i(loc, 0);
       }
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      if (outputRef.current && stripsRef.current.length > 0 && (window as any).electronAPI) {
+      const now = performance.now();
+      // Throttle DMX output to targetFps; canvas always renders at native 60fps
+      const outputInterval = 1000 / targetFpsRef.current;
+      if (
+        outputRef.current &&
+        stripsRef.current.length > 0 &&
+        (window as any).electronAPI &&
+        now - lastOutputTimeRef.current >= outputInterval
+      ) {
+        lastOutputTimeRef.current = now;
         const px = new Uint8Array(canvas.width * canvas.height * 4);
         gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, px);
         const universes = buildUniverses(stripsRef.current, px, canvas.width, canvas.height);
@@ -277,7 +291,6 @@ export function PixelCanvas({
       }
       const fps = fpsRef.current;
       fps.frames++;
-      const now = performance.now();
       if (now - fps.last >= 1000) { onFps(fps.frames); fps.frames = 0; fps.last = now; }
       rafRef.current = requestAnimationFrame(loop);
     };

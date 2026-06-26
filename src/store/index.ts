@@ -30,6 +30,7 @@ interface AppState {
   fps: number;
   effectShortcuts: Record<string, string>;
   showGrid: boolean;
+  targetFps: number;
 
   addStrip: (strip: Strip) => void;
   updateStrip: (id: string, updates: Partial<Strip>) => void;
@@ -45,6 +46,7 @@ interface AppState {
   setFps: (fps: number) => void;
   setEffectShortcut: (effect: string, key: string | null) => void;
   toggleGrid: () => void;
+  setTargetFps: (fps: number) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -63,6 +65,7 @@ export const useStore = create<AppState>()(
       fps: 0,
       effectShortcuts: DEFAULT_SHORTCUTS,
       showGrid: false,
+      targetFps: 30,
 
       addStrip: (strip) =>
         set((s) => ({
@@ -157,6 +160,7 @@ export const useStore = create<AppState>()(
         }),
 
       toggleGrid: () => set((s) => ({ showGrid: !s.showGrid })),
+      setTargetFps: (fps) => set({ targetFps: fps }),
     }),
     {
       name: 'keylight-pixel-mapper',
@@ -166,6 +170,7 @@ export const useStore = create<AppState>()(
         output: { ...state.output, enabled: false },
         effectShortcuts: state.effectShortcuts,
         showGrid: state.showGrid,
+        targetFps: state.targetFps,
         // past/future not persisted — history doesn't survive restarts
       }),
     }

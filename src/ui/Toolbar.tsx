@@ -22,6 +22,8 @@ export function Toolbar() {
   const setEffectShortcut = useStore((s) => s.setEffectShortcut);
   const showGrid = useStore((s) => s.showGrid);
   const toggleGrid = useStore((s) => s.toggleGrid);
+  const targetFps = useStore((s) => s.targetFps);
+  const setTargetFps = useStore((s) => s.setTargetFps);
   const canUndo = useStore((s) => s.past.length > 0);
   const canRedo = useStore((s) => s.future.length > 0);
   const undo = useStore((s) => s.undo);
@@ -101,6 +103,20 @@ export function Toolbar() {
         >
           ⊞ Grid
         </button>
+        <div className="divider" />
+        <label className="fps-label">
+          Out
+          <select
+            className="fps-select"
+            value={targetFps}
+            onChange={(e) => setTargetFps(Number(e.target.value))}
+            title="Output frames per second sent to fixtures"
+          >
+            {[10, 15, 20, 25, 30, 40, 44, 60].map((n) => (
+              <option key={n} value={n}>{n} fps</option>
+            ))}
+          </select>
+        </label>
         <div className="fps">{fps} fps</div>
       </div>
 
