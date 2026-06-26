@@ -11,47 +11,36 @@ function nextUniverse(strips: Strip[]): number {
   return last.universe + Math.ceil((last.startChannel + used) / 512);
 }
 
-interface CtxState {
-  x: number;
-  y: number;
-  stripId: string;
-}
+interface CtxState { x: number; y: number; stripId: string; }
 
 export function FixturePanel() {
   const strips = useStore((s) => s.strips);
-  const selectedId = useStore((s) => s.selectedStripId);
+  const selectedIds = useStore((s) => s.selectedStripIds);
   const addStrip = useStore((s) => s.addStrip);
   const removeStrip = useStore((s) => s.removeStrip);
   const duplicateStrip = useStore((s) => s.duplicateStrip);
   const updateStrip = useStore((s) => s.updateStrip);
-  const setSelected = useStore((s) => s.setSelectedStrip);
+  const setSelectedStrips = useStore((s) => s.setSelectedStrips);
+  const toggleStripSelection = useStore((s) => s.toggleStripSelection);
 
-  // Add form
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState('Strip');
   const [pixelCount, setPixelCount] = useState(30);
   const [channelOrder, setChannelOrder] = useState<ChannelOrder>('RGB');
 
-  // Rename
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameVal, setRenameVal] = useState('');
   const renameRef = useRef<HTMLInputElement>(null);
 
-  // Context menu
   const [ctx, setCtx] = useState<CtxState | null>(null);
 
   const handleAdd = () => {
     const strip: Strip = {
       id: uuid(),
       name: `${name} ${strips.length + 1}`,
-      pixelCount,
-      channelOrder,
-      x: 0.1,
-      y: 0.5,
-      angle: 0,
-      spacing: 0.02,
-      universe: nextUniverse(strips),
-      startChannel: 0,
+      pixelCount, channelOrder,
+      x: 0.1, y: 0.5, angle: 0, spacing: 0.02,
+      universe: nextUniverse(strips), startChannel: 0,
     };
     addStrip(strip);
     setShowForm(false);
@@ -64,9 +53,7 @@ export function FixturePanel() {
   };
 
   const commitRename = () => {
-    if (renamingId && renameVal.trim()) {
-      updateStrip(renamingId, { name: renameVal.trim() });
-    }
+    if (renamingId && renameVal.trim()) updateStrip(renamingId, { name: renameVal.trim() });
     setRenamingId(null);
   };
 
@@ -78,32 +65,13 @@ export function FixturePanel() {
 
   const ctxStrip = ctx ? strips.find((s) => s.id === ctx.stripId) : null;
 
-  const ctxItems: ContextMenuItem[] = ctxStrip
-    ? [
-        {
-          label: 'Rename',
-          icon: '✏️',
-          onClick: () => startRename(ctxStrip),
-        },
-        {
-          label: 'Edit',
-          icon: '⚙️',
-          onClick: () => setSelected(ctxStrip.id),
-        },
-        {
-          label: 'Duplicate',
-          icon: '⧉',
-          onClick: () => duplicateStrip(ctxStrip.id, uuid()),
-        },
-        { separator: true },
-        {
-          label: 'Delete',
-          icon: '🗑️',
-          danger: true,
-          onClick: () => removeStrip(ctxStrip.id),
-        },
-      ]
-    : [];
+  const ctxItems: ContextMenuItem[] = ctxStrip ? [
+    { label: 'Rename', icon: '✏️', onClick: () => startRename(ctxStrip) },
+    { label: 'Edit', icon: '⚙️', onClick: () => setSelectedStrips([ctxStrip.id]) },
+    { label: 'Duplicate', icon: '⧉', onClick: () => duplicateStrip(ctxStrip.id, uuid()) },
+    { separator: true },
+    { label: 'Delete', icon: '🗑️', danger: true, onClick: () => removeStrip(ctxStrip.id) },
+  ] : [];
 
   return (
     <div className="panel fixture-panel" onContextMenu={(e) => e.preventDefault()}>
@@ -114,23 +82,14 @@ export function FixturePanel() {
 
       {showForm && (
         <div className="add-form">
-          <label>Name
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
+          <label>Name<input value={name} onChange={(e) => setName(e.target.value)} /></label>
           <label>Pixels
-            <input
-              type="number" min={1} max={512} value={pixelCount}
-              onChange={(e) => setPixelCount(parseInt(e.target.value) || 1)}
-            />
+            <input type="number" min={1} max={512} value={pixelCount}
+              onChange={(e) => setPixelCount(parseInt(e.target.value) || 1)} />
           </label>
           <label>Channel Order
-            <select
-              value={channelOrder}
-              onChange={(e) => setChannelOrder(e.target.value as ChannelOrder)}
-            >
-              {CHANNEL_ORDERS.map((o) => (
-                <option key={o} value={o}>{o}</option>
-              ))}
+            <select value={channelOrder} onChange={(e) => setChannelOrder(e.target.value as ChannelOrder)}>
+              {CHANNEL_ORDERS.map((o) => <option key={o} value={o}>{o}</option>)}
             </select>
           </label>
           <div className="form-actions">
@@ -141,63 +100,63 @@ export function FixturePanel() {
       )}
 
       <div className="fixture-list">
-        {strips.map((strip) => (
-          <div
-            key={strip.id}
-            className={`fixture-item ${selectedId === strip.id ? 'selected' : ''}`}
-            onClick={() => setSelected(strip.id)}
-            onContextMenu={(e) => openCtx(e, strip)}
-            draggable={renamingId !== strip.id}
-            onDragStart={(e) => {
-              if (renamingId === strip.id) { e.preventDefault(); return; }
-              e.dataTransfer.setData('stripId', strip.id);
-            }}
-          >
-            <span className="dot" />
-
-            {renamingId === strip.id ? (
-              <input
-                ref={renameRef}
-                className="rename-input"
-                value={renameVal}
-                onChange={(e) => setRenameVal(e.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') commitRename();
-                  if (e.key === 'Escape') setRenamingId(null);
-                  e.stopPropagation();
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
-            ) : (
-              <span className="name">{strip.name}</span>
-            )}
-
-            <span className="meta">
-              {strip.pixelCount}px · {strip.channelOrder} · U{strip.universe}
-            </span>
-
-            <button
-              className="delete"
-              title="Delete"
-              onClick={(e) => { e.stopPropagation(); removeStrip(strip.id); }}
+        {strips.map((strip) => {
+          const isSel = selectedIds.includes(strip.id);
+          return (
+            <div
+              key={strip.id}
+              className={`fixture-item ${isSel ? 'selected' : ''}`}
+              onClick={(e) => {
+                if (renamingId === strip.id) return;
+                if (e.shiftKey) toggleStripSelection(strip.id);
+                else setSelectedStrips([strip.id]);
+              }}
+              onContextMenu={(e) => openCtx(e, strip)}
+              draggable={renamingId !== strip.id}
+              onDragStart={(e) => {
+                if (renamingId === strip.id) { e.preventDefault(); return; }
+                e.dataTransfer.setData('stripId', strip.id);
+              }}
             >
-              ✕
-            </button>
-          </div>
-        ))}
+              <span className="dot" />
+
+              {renamingId === strip.id ? (
+                <input
+                  ref={renameRef}
+                  className="rename-input"
+                  value={renameVal}
+                  onChange={(e) => setRenameVal(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename();
+                    if (e.key === 'Escape') setRenamingId(null);
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span className="name">{strip.name}</span>
+              )}
+
+              <span className="meta">{strip.pixelCount}px · {strip.channelOrder} · U{strip.universe}</span>
+
+              <button className="delete" title="Delete"
+                onClick={(e) => { e.stopPropagation(); removeStrip(strip.id); }}>✕</button>
+            </div>
+          );
+        })}
+
         {strips.length === 0 && (
           <div className="empty">No fixtures yet.<br />Click + to add a strip.</div>
+        )}
+
+        {selectedIds.length > 1 && (
+          <div className="multi-sel-hint">{selectedIds.length} selected</div>
         )}
       </div>
 
       {ctx && (
-        <ContextMenu
-          x={ctx.x}
-          y={ctx.y}
-          items={ctxItems}
-          onClose={() => setCtx(null)}
-        />
+        <ContextMenu x={ctx.x} y={ctx.y} items={ctxItems} onClose={() => setCtx(null)} />
       )}
     </div>
   );

@@ -240,6 +240,44 @@ kbd.shortcut-badge.capturing {
 .prop-group { padding: 10px; border-bottom: 1px solid var(--border); }
 .prop-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); margin-bottom: 8px; }
 
+/* Multi-select info in properties panel */
+.multi-sel-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 24px 16px 16px;
+  gap: 4px;
+}
+.multi-sel-count {
+  font-size: 42px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+}
+.multi-sel-label { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+.multi-sel-pixels { font-size: 10px; color: var(--text-dim); margin-bottom: 12px; }
+.multi-sel-tips {
+  width: 100%;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* Multi-select count hint at bottom of fixture list */
+.multi-sel-hint {
+  text-align: center;
+  font-size: 10px;
+  color: var(--accent);
+  padding: 4px 8px;
+  background: #001a2b;
+  border-radius: 3px;
+  margin: 4px;
+}
+
 .canvas-wrap { flex: 1; overflow: hidden; background: #000; }
 
 /* Rename input (inline in fixture list) */

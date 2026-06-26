@@ -3,12 +3,14 @@ import { CHANNEL_ORDERS, ChannelOrder } from '../fixtures/types';
 
 export function PropertiesPanel() {
   const strips = useStore((s) => s.strips);
-  const selectedId = useStore((s) => s.selectedStripId);
+  const selectedIds = useStore((s) => s.selectedStripIds);
   const updateStrip = useStore((s) => s.updateStrip);
 
-  const strip = strips.find((s) => s.id === selectedId);
+  const primaryId = selectedIds[0] ?? null;
+  const strip = strips.find((s) => s.id === primaryId);
 
-  if (!strip) {
+  // Nothing selected
+  if (selectedIds.length === 0) {
     return (
       <div className="panel properties-panel">
         <div className="panel-header">Properties</div>
@@ -16,6 +18,34 @@ export function PropertiesPanel() {
       </div>
     );
   }
+
+  // Multiple selected — show summary
+  if (selectedIds.length > 1) {
+    const totalPixels = strips
+      .filter((s) => selectedIds.includes(s.id))
+      .reduce((sum, s) => sum + s.pixelCount, 0);
+    return (
+      <div className="panel properties-panel">
+        <div className="panel-header">Properties</div>
+        <div className="multi-sel-info">
+          <div className="multi-sel-count">{selectedIds.length}</div>
+          <div className="multi-sel-label">fixtures selected</div>
+          <div className="multi-sel-pixels">{totalPixels} total pixels</div>
+          <div className="multi-sel-tips">
+            <div>Drag dots → move all</div>
+            <div>⟳ handle → rotate group</div>
+            <div>⤡ handle → scale group</div>
+            <div>Arrow keys → nudge all</div>
+            <div>Ctrl+D → duplicate all</div>
+            <div>Del → remove all</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Single selected
+  if (!strip) return null;
 
   const set = (field: string, value: string | number) =>
     updateStrip(strip.id, { [field]: value } as any);
@@ -51,8 +81,7 @@ export function PropertiesPanel() {
       <div className="prop-group">
         <div className="prop-label">Fixture</div>
         <label>Name
-          <input value={strip.name}
-            onChange={(e) => set('name', e.target.value)} />
+          <input value={strip.name} onChange={(e) => set('name', e.target.value)} />
         </label>
         <label>Pixel Count
           <input type="number" min={1} max={512} value={strip.pixelCount}
@@ -61,9 +90,7 @@ export function PropertiesPanel() {
         <label>Channel Order
           <select value={strip.channelOrder}
             onChange={(e) => set('channelOrder', e.target.value as ChannelOrder)}>
-            {CHANNEL_ORDERS.map((o) => (
-              <option key={o} value={o}>{o}</option>
-            ))}
+            {CHANNEL_ORDERS.map((o) => <option key={o} value={o}>{o}</option>)}
           </select>
         </label>
       </div>

@@ -10,23 +10,24 @@ export default function App() {
   const strips = useStore((s) => s.strips);
   const activeEffect = useStore((s) => s.activeEffect);
   const output = useStore((s) => s.output);
-  const selectedId = useStore((s) => s.selectedStripId);
+  const selectedIds = useStore((s) => s.selectedStripIds);
   const setFps = useStore((s) => s.setFps);
   const updateStrip = useStore((s) => s.updateStrip);
-  const setSelectedStrip = useStore((s) => s.setSelectedStrip);
+  const setSelectedStrips = useStore((s) => s.setSelectedStrips);
   const removeStrip = useStore((s) => s.removeStrip);
   const duplicateStrip = useStore((s) => s.duplicateStrip);
   const setActiveEffect = useStore((s) => s.setActiveEffect);
   const setOutput = useStore((s) => s.setOutput);
   const effectShortcuts = useStore((s) => s.effectShortcuts);
+  const showGrid = useStore((s) => s.showGrid);
+  const toggleGrid = useStore((s) => s.toggleGrid);
 
-  // Use refs so keydown handler always sees current values without re-subscribing
   const stripsRef = useRef(strips);
-  const selectedIdRef = useRef(selectedId);
+  const selectedIdsRef = useRef(selectedIds);
   const outputRef = useRef(output);
   const effectShortcutsRef = useRef(effectShortcuts);
   stripsRef.current = strips;
-  selectedIdRef.current = selectedId;
+  selectedIdsRef.current = selectedIds;
   outputRef.current = output;
   effectShortcutsRef.current = effectShortcuts;
 
@@ -36,15 +37,13 @@ export default function App() {
       const tag = (e.target as Element).tagName;
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
-      // User-assigned effect shortcuts
-      const shortcuts = effectShortcutsRef.current;
-      const matchedEffect = Object.entries(shortcuts).find(([, k]) => k === e.key);
-      if (matchedEffect && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        setActiveEffect(matchedEffect[0]);
+      // Effect shortcuts
+      const matched = Object.entries(effectShortcutsRef.current).find(([, k]) => k === e.key);
+      if (matched && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        setActiveEffect(matched[0]);
         return;
       }
 
-      // Built-in shortcuts
       switch (e.key) {
         case ' ':
           e.preventDefault();
@@ -54,21 +53,29 @@ export default function App() {
           break;
 
         case 'Escape':
-          setSelectedStrip(null);
+          setSelectedStrips([]);
           break;
 
         case 'Delete':
-        case 'Backspace': {
-          const id = selectedIdRef.current;
-          if (id) removeStrip(id);
+        case 'Backspace':
+          for (const id of selectedIdsRef.current) removeStrip(id);
           break;
-        }
 
         case 'd':
           if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
-            const id = selectedIdRef.current;
-            if (id) duplicateStrip(id, uuid());
+            for (const id of selectedIdsRef.current) duplicateStrip(id, uuid());
+          }
+          break;
+
+        case 'g':
+          if (!e.ctrlKey && !e.metaKey && !e.altKey) toggleGrid();
+          break;
+
+        case 'a':
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            setSelectedStrips(stripsRef.current.map((s) => s.id));
           }
           break;
 
@@ -76,18 +83,19 @@ export default function App() {
         case 'ArrowRight':
         case 'ArrowUp':
         case 'ArrowDown': {
-          const id = selectedIdRef.current;
-          if (!id) break;
+          const ids = selectedIdsRef.current;
+          if (!ids.length) break;
           e.preventDefault();
-          const strip = stripsRef.current.find((s) => s.id === id);
-          if (!strip) break;
           const step = e.shiftKey ? 0.001 : 0.005;
           const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
           const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
-          updateStrip(id, {
-            x: Math.max(0, Math.min(1, strip.x + dx)),
-            y: Math.max(0, Math.min(1, strip.y + dy)),
-          });
+          for (const id of ids) {
+            const strip = stripsRef.current.find((s) => s.id === id);
+            if (strip) updateStrip(id, {
+              x: Math.max(0, Math.min(1, strip.x + dx)),
+              y: Math.max(0, Math.min(1, strip.y + dy)),
+            });
+          }
           break;
         }
       }
@@ -95,7 +103,7 @@ export default function App() {
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [setActiveEffect, setOutput, setSelectedStrip, removeStrip, duplicateStrip, updateStrip]);
+  }, [setActiveEffect, setOutput, setSelectedStrips, removeStrip, duplicateStrip, updateStrip, toggleGrid]);
 
   const handleStripDrop = useCallback(
     (id: string, x: number, y: number) => updateStrip(id, { x, y }),
@@ -113,10 +121,11 @@ export default function App() {
             activeEffect={activeEffect}
             outputEnabled={output.enabled}
             onFps={setFps}
-            selectedStripId={selectedId}
-            onSelectStrip={setSelectedStrip}
+            selectedStripIds={selectedIds}
+            onSelectStrips={setSelectedStrips}
             onUpdateStrip={updateStrip}
             onStripDrop={handleStripDrop}
+            showGrid={showGrid}
           />
         </div>
         <PropertiesPanel />
