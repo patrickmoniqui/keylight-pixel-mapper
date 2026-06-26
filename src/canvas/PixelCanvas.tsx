@@ -2,11 +2,17 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { Strip, applyChannelOrder } from '../fixtures/types';
 import { VERTEX_SHADER, EFFECTS } from './shaders';
 
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace('#', ''), 16);
+  return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   strips: Strip[];
   activeEffect: string;
+  effectParams: Record<string, Record<string, string | number>>;
   outputEnabled: boolean;
   onFps: (fps: number) => void;
   selectedStripIds: string[];
@@ -177,6 +183,7 @@ interface DragState {
 export function PixelCanvas({
   strips,
   activeEffect,
+  effectParams,
   outputEnabled,
   onFps,
   selectedStripIds,
@@ -239,11 +246,13 @@ export function PixelCanvas({
   // ── Render loop ──────────────────────────────────────────────────────────
   const stripsRef = useRef(strips);
   const effectRef = useRef(activeEffect);
+  const effectParamsRef = useRef(effectParams);
   const outputRef = useRef(outputEnabled);
   const targetFpsRef = useRef(targetFps);
   const lastOutputTimeRef = useRef(0);
   stripsRef.current = strips;
   effectRef.current = activeEffect;
+  effectParamsRef.current = effectParams;
   outputRef.current = outputEnabled;
   targetFpsRef.current = targetFps;
 
@@ -264,6 +273,21 @@ export function PixelCanvas({
       gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
       const timeLoc = gl.getUniformLocation(prog, 'u_time');
       if (timeLoc) gl.uniform1f(timeLoc, t);
+      const effDef = EFFECTS[eff];
+      if (effDef?.params) {
+        const paramVals = effectParamsRef.current[eff] ?? {};
+        for (const [key, paramDef] of Object.entries(effDef.params)) {
+          const val = key in paramVals ? paramVals[key] : paramDef.default;
+          const loc = gl.getUniformLocation(prog, `u_${key}`);
+          if (!loc) continue;
+          if (paramDef.type === 'color') {
+            const [r, g, b] = hexToRgb(val as string);
+            gl.uniform3f(loc, r, g, b);
+          } else {
+            gl.uniform1f(loc, val as number);
+          }
+        }
+      }
       if (eff === 'audio' && audioRef.current) {
         const { analyser, data, texture } = audioRef.current;
         analyser.getByteFrequencyData(data);

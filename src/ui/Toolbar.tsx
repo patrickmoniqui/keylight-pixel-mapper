@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { EFFECTS, EFFECT_CATEGORIES } from '../canvas/shaders';
+import { EffectParams } from './EffectParams';
 
 const RESERVED = new Set(['Escape', 'Delete', 'Backspace', ' ', 'Tab',
   'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12']);
@@ -147,6 +148,8 @@ export function Toolbar() {
           );
         })}
       </div>
+
+      <EffectParams />
 
       <div className="shortcut-legend">
         <span><kbd>Space</kbd> Output</span>

@@ -19,6 +19,7 @@ export default function App() {
   const setActiveEffect = useStore((s) => s.setActiveEffect);
   const setOutput = useStore((s) => s.setOutput);
   const effectShortcuts = useStore((s) => s.effectShortcuts);
+  const effectParams = useStore((s) => s.effectParams);
   const showGrid = useStore((s) => s.showGrid);
   const toggleGrid = useStore((s) => s.toggleGrid);
   const targetFps = useStore((s) => s.targetFps);
@@ -140,6 +141,7 @@ export default function App() {
           <PixelCanvas
             strips={strips}
             activeEffect={activeEffect}
+            effectParams={effectParams}
             outputEnabled={output.enabled}
             onFps={setFps}
             selectedStripIds={selectedIds}
