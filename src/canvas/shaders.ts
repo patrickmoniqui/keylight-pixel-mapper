@@ -314,7 +314,7 @@ export const EFFECTS: Record<string, EffectDef> = {
 
   // ─── Reactive ────────────────────────────────────────────────────────────
   audio: {
-    label: 'Audio',
+    label: 'Spectrum',
     category: 'Reactive',
     frag: frag(`
   float freq = texture(u_audio, vec2(v_uv.x, 0.5)).r;
@@ -325,6 +325,139 @@ export const EFFECTS: Record<string, EffectDef> = {
   vec3 high = vec3(0.0, 0.3,  1.0);
   vec3 hc = v_uv.x < 0.33 ? bass : (v_uv.x < 0.66 ? mid : high);
   fragColor = vec4(hc * (lit + glow * 0.3), 1.0);`),
+  },
+
+  bassPulse: {
+    label: 'Bass Pulse',
+    category: 'Reactive',
+    frag: frag(`
+  float bass = pow(texture(u_audio, vec2(0.04, 0.5)).r, 1.5);
+  float hue = fract(u_time * 0.07 + bass * 0.2);
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, bass)), 1.0);`, H),
+  },
+
+  beatFlash: {
+    label: 'Beat Flash',
+    category: 'Reactive',
+    frag: frag(`
+  float bass = pow(texture(u_audio, vec2(0.05, 0.5)).r, 2.0);
+  float hue = fract(floor(u_time * 3.0) * 0.37);
+  float sat = 1.0 - bass * 0.5;
+  fragColor = vec4(hsv2rgb(vec3(hue, sat, bass)), 1.0);`, H),
+  },
+
+  vuMeter: {
+    label: 'VU Meter',
+    category: 'Reactive',
+    frag: frag(`
+  float vol = 0.0;
+  for (int i = 0; i < 8; i++) {
+    vol += texture(u_audio, vec2((float(i) + 0.5) / 8.0, 0.5)).r;
+  }
+  vol = clamp(vol / 4.0, 0.0, 1.0);
+  float lit = step(v_uv.x, vol);
+  float hue = 0.33 * (1.0 - v_uv.x);
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, lit)), 1.0);`, H),
+  },
+
+  freqRgb: {
+    label: 'Freq RGB',
+    category: 'Reactive',
+    frag: frag(`
+  float bass = pow(texture(u_audio, vec2(0.05, 0.5)).r, 1.3);
+  float mid  = pow(texture(u_audio, vec2(0.35, 0.5)).r, 1.3);
+  float high = pow(texture(u_audio, vec2(0.80, 0.5)).r, 1.3);
+  fragColor = vec4(bass, mid, high, 1.0);`),
+  },
+
+  specChase: {
+    label: 'Spec Chase',
+    category: 'Reactive',
+    frag: frag(`
+  float maxVal = 0.0;
+  float maxBin = 0.0;
+  for (int i = 0; i < 16; i++) {
+    float fx = (float(i) + 0.5) / 16.0;
+    float fv = texture(u_audio, vec2(fx, 0.5)).r;
+    float pick = step(maxVal, fv);
+    maxBin = mix(maxBin, fx, pick);
+    maxVal = max(maxVal, fv);
+  }
+  float d = abs(v_uv.x - maxBin);
+  float wrap = min(d, 1.0 - d);
+  float dotB = (1.0 - smoothstep(0.0, 0.04, wrap)) * maxVal;
+  float glowB = (1.0 - smoothstep(0.0, 0.14, wrap)) * maxVal * 0.3;
+  float hue = maxBin * 0.65;
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, max(dotB, glowB))), 1.0);`, H),
+  },
+
+  audioRipple: {
+    label: 'Audio Ripple',
+    category: 'Reactive',
+    frag: frag(`
+  float bass = texture(u_audio, vec2(0.04, 0.5)).r;
+  float mid  = texture(u_audio, vec2(0.40, 0.5)).r;
+  vec2 c = v_uv - 0.5;
+  float d = length(c * vec2(1.78, 1.0));
+  float r = sin(d * 20.0 - u_time * 6.0);
+  float i = (r * 0.5 + 0.5) * bass * max(0.0, 1.0 - d * 2.2);
+  float hue = fract(d * 0.4 - u_time * 0.08 + mid * 0.5);
+  fragColor = vec4(hsv2rgb(vec3(hue, 0.9, i)), 1.0);`, H),
+  },
+
+  bassFire: {
+    label: 'Bass Fire',
+    category: 'Reactive',
+    frag: frag(`
+  float bass = texture(u_audio, vec2(0.04, 0.5)).r;
+  float t = u_time * 0.5;
+  float n = noise(v_uv * 4.0 + vec2(0.0, -t * 2.0))
+          + 0.5 * noise(v_uv * 8.0 + vec2(0.0, -t * 3.0))
+          + 0.25 * noise(v_uv * 16.0 + vec2(0.0, -t * 4.0));
+  n /= 1.75;
+  float height = 0.5 + 1.5 * bass;
+  float fire = clamp(n * 2.0 - (1.0 - v_uv.y) * height, 0.0, 1.0);
+  vec3 col = vec3(fire * 2.0, fire * fire * 0.6, fire * fire * fire * 0.1);
+  fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);`, NOISE),
+  },
+
+  waveform: {
+    label: 'Waveform',
+    category: 'Reactive',
+    frag: frag(`
+  float freq = texture(u_audio, vec2(v_uv.x, 0.5)).r;
+  float wave = 0.5 + freq * 0.35 * sin(v_uv.x * 12.566 + u_time * 5.0);
+  float d = abs(v_uv.y - wave);
+  float line = 1.0 - smoothstep(0.0, 0.025, d);
+  float glow = (1.0 - smoothstep(0.0, 0.1, d)) * freq * 0.5;
+  float hue = fract(v_uv.x * 0.4 + u_time * 0.06);
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, min(1.0, line + glow))), 1.0);`, H),
+  },
+
+  bands: {
+    label: 'Bands',
+    category: 'Reactive',
+    frag: frag(`
+  float bass = pow(texture(u_audio, vec2(0.06, 0.5)).r, 1.2);
+  float mid  = pow(texture(u_audio, vec2(0.35, 0.5)).r, 1.2);
+  float high = pow(texture(u_audio, vec2(0.78, 0.5)).r, 1.2);
+  vec3 bassCol = vec3(1.0, 0.05, 0.0) * bass;
+  vec3 midCol  = vec3(0.05, 1.0, 0.1) * mid;
+  vec3 highCol = vec3(0.1, 0.15, 1.0) * high;
+  float t = v_uv.x;
+  vec3 col = mix(mix(bassCol, midCol, smoothstep(0.1, 0.5, t)),
+                 highCol, smoothstep(0.5, 0.9, t));
+  fragColor = vec4(col, 1.0);`),
+  },
+
+  specMirror: {
+    label: 'Spec Mirror',
+    category: 'Reactive',
+    frag: frag(`
+  float x = abs(v_uv.x - 0.5) * 2.0;
+  float freq = texture(u_audio, vec2(x * 0.8, 0.5)).r;
+  float hue = fract(x * 0.35 + u_time * 0.05);
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, freq)), 1.0);`, H),
   },
 };
 

@@ -205,8 +205,9 @@ export function PixelCanvas({
   const [dragType, setDragType] = useState<DragType | null>(null);
 
   // ── Audio ────────────────────────────────────────────────────────────────
+  const isReactiveEffect = EFFECTS[activeEffect]?.category === 'Reactive';
   useEffect(() => {
-    if (activeEffect !== 'audio') return;
+    if (!isReactiveEffect) return;
     let ctx: AudioContext;
     navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
       ctx = new AudioContext();
@@ -225,7 +226,7 @@ export function PixelCanvas({
       audioRef.current = { analyser, data, texture };
     }).catch(() => {});
     return () => { audioRef.current = null; ctx?.close(); };
-  }, [activeEffect]);
+  }, [isReactiveEffect]);
 
   // ── WebGL init ───────────────────────────────────────────────────────────
   useEffect(() => {
@@ -288,7 +289,7 @@ export function PixelCanvas({
           }
         }
       }
-      if (eff === 'audio' && audioRef.current) {
+      if (EFFECTS[eff]?.category === 'Reactive' && audioRef.current) {
         const { analyser, data, texture } = audioRef.current;
         analyser.getByteFrequencyData(data);
         gl.activeTexture(gl.TEXTURE0);
