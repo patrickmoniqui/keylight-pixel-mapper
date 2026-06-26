@@ -13,6 +13,7 @@ interface Props {
   onSelectStrips: (ids: string[]) => void;
   onUpdateStrip: (id: string, updates: Partial<Strip>) => void;
   onStripDrop: (id: string, x: number, y: number) => void;
+  onSnapshot: () => void;
   showGrid: boolean;
 }
 
@@ -181,6 +182,7 @@ export function PixelCanvas({
   onSelectStrips,
   onUpdateStrip,
   onStripDrop,
+  onSnapshot,
   showGrid,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -306,6 +308,7 @@ export function PixelCanvas({
   }, []);
 
   const startDrag = useCallback((e: React.PointerEvent, type: 'move' | 'rotate' | 'spacing', strip: Strip) => {
+    onSnapshot();
     (e.target as Element).setPointerCapture(e.pointerId);
     const pos = getSvgPos(e);
     dragRef.current = {
@@ -315,7 +318,7 @@ export function PixelCanvas({
     };
     setDragType(type);
     onSelectStrips([strip.id]);
-  }, [getSvgPos, onSelectStrips]);
+  }, [getSvgPos, onSelectStrips, onSnapshot]);
 
   const startMultiDrag = useCallback((
     e: React.PointerEvent,
@@ -324,6 +327,7 @@ export function PixelCanvas({
     centroidNX: number,
     centroidNY: number,
   ) => {
+    onSnapshot();
     (e.target as Element).setPointerCapture(e.pointerId);
     const pos = getSvgPos(e);
     const nx = pos.x / 960, ny = pos.y / 540;
@@ -338,7 +342,7 @@ export function PixelCanvas({
       initDist: Math.sqrt((nx - centroidNX) ** 2 + (ny - centroidNY) ** 2),
     };
     setDragType(type);
-  }, [getSvgPos]);
+  }, [getSvgPos, onSnapshot]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     const drag = dragRef.current;

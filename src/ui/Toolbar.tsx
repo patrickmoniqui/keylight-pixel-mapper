@@ -22,6 +22,10 @@ export function Toolbar() {
   const setEffectShortcut = useStore((s) => s.setEffectShortcut);
   const showGrid = useStore((s) => s.showGrid);
   const toggleGrid = useStore((s) => s.toggleGrid);
+  const canUndo = useStore((s) => s.past.length > 0);
+  const canRedo = useStore((s) => s.future.length > 0);
+  const undo = useStore((s) => s.undo);
+  const redo = useStore((s) => s.redo);
 
   const [capturing, setCapturing] = useState<string | null>(null);
 
@@ -87,6 +91,9 @@ export function Toolbar() {
           {output.enabled ? '⬤ Live' : '◯ Output Off'}
         </button>
         <div className="divider" />
+        <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">↩ Undo</button>
+        <button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)">↪ Redo</button>
+        <div className="divider" />
         <button
           className={showGrid ? 'active' : ''}
           onClick={toggleGrid}
@@ -132,6 +139,8 @@ export function Toolbar() {
         <span><kbd>Ctrl+A</kbd> Select all</span>
         <span><kbd>Ctrl+D</kbd> Duplicate</span>
         <span><kbd>↑↓←→</kbd> Nudge <small>(+Shift fine)</small></span>
+        <span><kbd>Ctrl+Z</kbd> Undo</span>
+        <span><kbd>Ctrl+Y</kbd> Redo</span>
         <span><kbd>G</kbd> Grid</span>
         <span><kbd>Shift+click</kbd> Multi-select</span>
         <span className="legend-hint">Right-click effect to assign key</span>

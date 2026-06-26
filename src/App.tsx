@@ -21,6 +21,9 @@ export default function App() {
   const effectShortcuts = useStore((s) => s.effectShortcuts);
   const showGrid = useStore((s) => s.showGrid);
   const toggleGrid = useStore((s) => s.toggleGrid);
+  const snapshotStrips = useStore((s) => s.snapshotStrips);
+  const undo = useStore((s) => s.undo);
+  const redo = useStore((s) => s.redo);
 
   const stripsRef = useRef(strips);
   const selectedIdsRef = useRef(selectedIds);
@@ -30,6 +33,9 @@ export default function App() {
   selectedIdsRef.current = selectedIds;
   outputRef.current = output;
   effectShortcutsRef.current = effectShortcuts;
+
+  // Debounce snapshot for keyboard nudge so holding arrow doesn't spam history
+  const lastNudgeSnapshotRef = useRef(0);
 
   // Global keyboard shortcuts
   useEffect(() => {
@@ -68,6 +74,14 @@ export default function App() {
           }
           break;
 
+        case 'z':
+          if (e.ctrlKey || e.metaKey) { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+          break;
+
+        case 'y':
+          if (e.ctrlKey || e.metaKey) { e.preventDefault(); redo(); }
+          break;
+
         case 'g':
           if (!e.ctrlKey && !e.metaKey && !e.altKey) toggleGrid();
           break;
@@ -86,6 +100,12 @@ export default function App() {
           const ids = selectedIdsRef.current;
           if (!ids.length) break;
           e.preventDefault();
+          // Snapshot at most once per 600ms so holding arrow makes one undo entry
+          const now = Date.now();
+          if (now - lastNudgeSnapshotRef.current > 600) {
+            snapshotStrips();
+            lastNudgeSnapshotRef.current = now;
+          }
           const step = e.shiftKey ? 0.001 : 0.005;
           const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
           const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
@@ -103,7 +123,7 @@ export default function App() {
 
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [setActiveEffect, setOutput, setSelectedStrips, removeStrip, duplicateStrip, updateStrip, toggleGrid]);
+  }, [setActiveEffect, setOutput, setSelectedStrips, removeStrip, duplicateStrip, updateStrip, toggleGrid, undo, redo, snapshotStrips]);
 
   const handleStripDrop = useCallback(
     (id: string, x: number, y: number) => updateStrip(id, { x, y }),
@@ -125,6 +145,7 @@ export default function App() {
             onSelectStrips={setSelectedStrips}
             onUpdateStrip={updateStrip}
             onStripDrop={handleStripDrop}
+            onSnapshot={snapshotStrips}
             showGrid={showGrid}
           />
         </div>

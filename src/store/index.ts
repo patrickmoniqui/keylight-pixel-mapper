@@ -10,8 +10,20 @@ const DEFAULT_SHORTCUTS: Record<string, string> = {
   chase:   '5',
 };
 
+const MAX_HISTORY = 50;
+
+function snapshot(strips: Strip[]): Strip[] {
+  return [...strips]; // Strip objects are replaced on update, never mutated — shallow copy is safe
+}
+
+function pushPast(past: Strip[][], strips: Strip[]): Strip[][] {
+  return [...past.slice(-(MAX_HISTORY - 1)), snapshot(strips)];
+}
+
 interface AppState {
   strips: Strip[];
+  past: Strip[][];
+  future: Strip[][];
   selectedStripIds: string[];
   activeEffect: string;
   output: OutputConfig;
@@ -23,6 +35,9 @@ interface AppState {
   updateStrip: (id: string, updates: Partial<Strip>) => void;
   removeStrip: (id: string) => void;
   duplicateStrip: (id: string, newId: string) => void;
+  snapshotStrips: () => void;
+  undo: () => void;
+  redo: () => void;
   setSelectedStrips: (ids: string[]) => void;
   toggleStripSelection: (id: string) => void;
   setActiveEffect: (effect: string) => void;
@@ -36,6 +51,8 @@ export const useStore = create<AppState>()(
   persist(
     (set) => ({
       strips: [] as Strip[],
+      past: [] as Strip[][],
+      future: [] as Strip[][],
       selectedStripIds: [] as string[],
       activeEffect: 'rainbow',
       output: {
@@ -47,8 +64,14 @@ export const useStore = create<AppState>()(
       effectShortcuts: DEFAULT_SHORTCUTS,
       showGrid: false,
 
-      addStrip: (strip) => set((s) => ({ strips: [...s.strips, strip] })),
+      addStrip: (strip) =>
+        set((s) => ({
+          past: pushPast(s.past, s.strips),
+          future: [],
+          strips: [...s.strips, strip],
+        })),
 
+      // updateStrip does NOT push history — callers use snapshotStrips() before drag/nudge
       updateStrip: (id, updates) =>
         set((s) => ({
           strips: s.strips.map((strip) =>
@@ -58,6 +81,8 @@ export const useStore = create<AppState>()(
 
       removeStrip: (id) =>
         set((s) => ({
+          past: pushPast(s.past, s.strips),
+          future: [],
           strips: s.strips.filter((strip) => strip.id !== id),
           selectedStripIds: s.selectedStripIds.filter((sid) => sid !== id),
         })),
@@ -67,13 +92,46 @@ export const useStore = create<AppState>()(
           const src = s.strips.find((strip) => strip.id === id);
           if (!src) return s;
           const copy: Strip = {
-            ...src,
-            id: newId,
+            ...src, id: newId,
             name: `${src.name} (copy)`,
             x: Math.min(1, src.x + 0.02),
             y: Math.min(1, src.y + 0.02),
           };
-          return { strips: [...s.strips, copy], selectedStripIds: [newId] };
+          return {
+            past: pushPast(s.past, s.strips),
+            future: [],
+            strips: [...s.strips, copy],
+            selectedStripIds: [newId],
+          };
+        }),
+
+      // Call before any drag or nudge begins — records current strips into history
+      snapshotStrips: () =>
+        set((s) => ({
+          past: pushPast(s.past, s.strips),
+          future: [],
+        })),
+
+      undo: () =>
+        set((s) => {
+          if (s.past.length === 0) return s;
+          const prev = s.past[s.past.length - 1];
+          return {
+            past: s.past.slice(0, -1),
+            future: [snapshot(s.strips), ...s.future.slice(0, MAX_HISTORY - 1)],
+            strips: prev,
+          };
+        }),
+
+      redo: () =>
+        set((s) => {
+          if (s.future.length === 0) return s;
+          const next = s.future[0];
+          return {
+            past: pushPast(s.past, s.strips),
+            future: s.future.slice(1),
+            strips: next,
+          };
         }),
 
       setSelectedStrips: (ids) => set({ selectedStripIds: ids }),
@@ -92,9 +150,7 @@ export const useStore = create<AppState>()(
       setEffectShortcut: (effect, key) =>
         set((s) => {
           const next = Object.fromEntries(
-            Object.entries(s.effectShortcuts).filter(
-              ([e, k]) => e !== effect && k !== key
-            )
+            Object.entries(s.effectShortcuts).filter(([e, k]) => e !== effect && k !== key)
           );
           if (key) next[effect] = key;
           return { effectShortcuts: next };
@@ -104,13 +160,13 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'keylight-pixel-mapper',
-      // Only persist data — not runtime state like fps, selectedStripIds, or output.enabled
       partialize: (state) => ({
         strips: state.strips,
         activeEffect: state.activeEffect,
         output: { ...state.output, enabled: false },
         effectShortcuts: state.effectShortcuts,
         showGrid: state.showGrid,
+        // past/future not persisted — history doesn't survive restarts
       }),
     }
   )
