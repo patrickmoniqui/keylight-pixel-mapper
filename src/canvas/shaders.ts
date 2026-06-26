@@ -6,10 +6,22 @@ void main() {
   gl_Position = vec4(a_position, 0.0, 1.0);
 }`;
 
+export type EffectParamType = 'color' | 'range';
+
+export interface EffectParamDef {
+  type: EffectParamType;
+  label: string;
+  default: string | number;
+  min?: number;
+  max?: number;
+  step?: number;
+}
+
 export interface EffectDef {
   label: string;
   category: string;
   frag: string;
+  params?: Record<string, EffectParamDef>;
 }
 
 // Shared utilities inlined per shader
@@ -17,11 +29,26 @@ const H = `vec3 hsv2rgb(vec3 c){vec4 K=vec4(1.,2./3.,1./3.,3.);vec3 p=abs(fract(
 const HASH = `float h1(float n){return fract(sin(n)*43758.5453);}float h2(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}`;
 const NOISE = `${HASH}float noise(vec2 p){vec2 i=floor(p);vec2 f=fract(p);f=f*f*(3.-2.*f);return mix(mix(h2(i),h2(i+vec2(1,0)),f.x),mix(h2(i+vec2(0,1)),h2(i+vec2(1,1)),f.x),f.y);}`;
 
-function frag(body: string, utils = ''): string {
+// Shared uniforms + UV rotation transform for Movement effects
+const ROT_U = 'uniform float u_speed;\nuniform float u_size;\nuniform float u_rotation;';
+const ROT = `
+  vec2 uv = v_uv - 0.5;
+  float cosR = cos(u_rotation * 0.017453);
+  float sinR = sin(u_rotation * 0.017453);
+  uv = vec2(uv.x * cosR - uv.y * sinR, uv.x * sinR + uv.y * cosR) + 0.5;`;
+
+const MOTION_PARAMS: Record<string, EffectParamDef> = {
+  rotation: { type: 'range', label: 'Rotation', default: 0,   min: -180, max: 180, step: 1   },
+  speed:    { type: 'range', label: 'Speed',    default: 1,   min: 0,    max: 4,   step: 0.1 },
+  size:     { type: 'range', label: 'Size',     default: 1,   min: 0.1,  max: 5,   step: 0.1 },
+};
+
+function frag(body: string, utils = '', extraUniforms = ''): string {
   return `#version 300 es
 precision highp float;
 uniform float u_time;
 uniform sampler2D u_audio;
+${extraUniforms}
 in vec2 v_uv;
 out vec4 fragColor;
 ${utils}
@@ -35,112 +62,128 @@ export const EFFECTS: Record<string, EffectDef> = {
   solid: {
     label: 'Solid',
     category: 'Basic',
+    params: {
+      color: { type: 'color', label: 'Color', default: '#ffe0d0' },
+    },
     frag: frag(`
-  fragColor = vec4(1.0, 0.94, 0.82, 1.0);`),
+  fragColor = vec4(u_color, 1.0);`, '', 'uniform vec3 u_color;'),
   },
 
   strobe: {
     label: 'Strobe',
     category: 'Basic',
+    params: {
+      speed: { type: 'range', label: 'Speed', default: 10, min: 1, max: 60, step: 1 },
+      color: { type: 'color', label: 'Color', default: '#ffffff' },
+    },
     frag: frag(`
-  float on = step(0.5, fract(u_time * 10.0));
-  fragColor = vec4(vec3(on), 1.0);`),
+  float on = step(0.5, fract(u_time * u_speed));
+  fragColor = vec4(u_color * on, 1.0);`, '', 'uniform float u_speed;\nuniform vec3 u_color;'),
   },
 
   breathe: {
     label: 'Breathe',
     category: 'Basic',
+    params: {
+      speed: { type: 'range', label: 'Speed', default: 0.9, min: 0.1, max: 5.0, step: 0.1 },
+      color: { type: 'color', label: 'Color', default: '#00aaff' },
+    },
     frag: frag(`
-  float b = pow(0.5 + 0.5 * sin(u_time * 0.9), 2.5);
-  float hue = fract(u_time * 0.04);
-  fragColor = vec4(hsv2rgb(vec3(hue, 0.75, b)), 1.0);`, H),
+  float b = pow(0.5 + 0.5 * sin(u_time * u_speed), 2.5);
+  fragColor = vec4(u_color * b, 1.0);`, '', 'uniform float u_speed;\nuniform vec3 u_color;'),
   },
 
   // ─── Movement ────────────────────────────────────────────────────────────
   rainbow: {
     label: 'Rainbow',
     category: 'Movement',
-    frag: frag(`
-  float hue = fract(v_uv.x + u_time * 0.3);
-  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, 1.0)), 1.0);`, H),
+    params: { ...MOTION_PARAMS },
+    frag: frag(`${ROT}
+  float hue = fract(uv.x * u_size + u_time * 0.3 * u_speed);
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, 1.0)), 1.0);`, H, ROT_U),
   },
 
   chase: {
     label: 'Chase',
     category: 'Movement',
-    frag: frag(`
-  float pos = fract(u_time * 0.4);
-  float d = abs(v_uv.x - pos);
+    params: { ...MOTION_PARAMS },
+    frag: frag(`${ROT}
+  float pos = fract(u_time * 0.4 * u_speed);
+  float d = abs(uv.x - pos);
   float wrap = min(d, 1.0 - d);
-  float head = 1.0 - smoothstep(0.0, 0.06, wrap);
-  float tail = 1.0 - smoothstep(0.0, 0.15, mod(v_uv.x - pos + 1.0, 1.0));
+  float head = 1.0 - smoothstep(0.0, 0.06 * u_size, wrap);
+  float tail = 1.0 - smoothstep(0.0, 0.15 * u_size, mod(uv.x - pos + 1.0, 1.0));
   float brightness = max(head, tail * 0.4);
-  fragColor = vec4(hsv2rgb(vec3(fract(u_time * 0.1), 1.0, brightness)), 1.0);`, H),
+  fragColor = vec4(hsv2rgb(vec3(fract(u_time * 0.1), 1.0, brightness)), 1.0);`, H, ROT_U),
   },
 
   scanner: {
     label: 'Scanner',
     category: 'Movement',
-    frag: frag(`
-  float pos = 0.5 + 0.5 * sin(u_time * 2.2);
-  float d = abs(v_uv.x - pos);
-  float head = 1.0 - smoothstep(0.0, 0.03, d);
-  float glow = (1.0 - smoothstep(0.0, 0.14, d)) * 0.28;
+    params: { ...MOTION_PARAMS },
+    frag: frag(`${ROT}
+  float pos = 0.5 + 0.5 * sin(u_time * 2.2 * u_speed);
+  float d = abs(uv.x - pos);
+  float head = 1.0 - smoothstep(0.0, 0.03 * u_size, d);
+  float glow = (1.0 - smoothstep(0.0, 0.14 * u_size, d)) * 0.28;
   float i = max(head, glow);
-  fragColor = vec4(i, i * 0.08, 0.0, 1.0);`),
+  fragColor = vec4(i, i * 0.08, 0.0, 1.0);`, '', ROT_U),
   },
 
   meteor: {
     label: 'Meteor',
     category: 'Movement',
-    frag: frag(`
-  float sp = 0.35;
-  float m1 = fract(v_uv.x - u_time * sp);
-  float m2 = fract(v_uv.x - u_time * sp * 0.65 + 0.45);
-  float i1 = max(1.0 - smoothstep(0.0, 0.02, m1),
-                 (1.0 - smoothstep(0.0, 0.22, m1)) * 0.55);
-  float i2 = max(1.0 - smoothstep(0.0, 0.02, m2),
-                 (1.0 - smoothstep(0.0, 0.16, m2)) * 0.45);
+    params: { ...MOTION_PARAMS },
+    frag: frag(`${ROT}
+  float m1 = fract(uv.x - u_time * 0.35 * u_speed);
+  float m2 = fract(uv.x - u_time * 0.35 * u_speed * 0.65 + 0.45);
+  float i1 = max(1.0 - smoothstep(0.0, 0.02 * u_size, m1),
+                 (1.0 - smoothstep(0.0, 0.22 * u_size, m1)) * 0.55);
+  float i2 = max(1.0 - smoothstep(0.0, 0.02 * u_size, m2),
+                 (1.0 - smoothstep(0.0, 0.16 * u_size, m2)) * 0.45);
   vec3 c = vec3(i1, i1*0.55, i1*0.08) + vec3(i2*0.4, i2*0.7, i2);
-  fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);`),
+  fragColor = vec4(clamp(c, 0.0, 1.0), 1.0);`, '', ROT_U),
   },
 
   wipe: {
     label: 'Color Wipe',
     category: 'Movement',
-    frag: frag(`
-  float cycle = u_time * 0.28;
+    params: { ...MOTION_PARAMS },
+    frag: frag(`${ROT}
+  float cycle = u_time * 0.28 * u_speed;
   float wipePos = fract(cycle);
   float hue = fract(floor(cycle) * 0.618034);
-  float on = step(v_uv.x, wipePos);
-  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, 1.0)) * on, 1.0);`, H),
+  float on = step(fract(uv.x * u_size), wipePos);
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, 1.0)) * on, 1.0);`, H, ROT_U),
   },
 
   theater: {
     label: 'Theater',
     category: 'Movement',
-    frag: frag(`
-  float phase = floor(u_time * 8.0);
-  float col = floor(v_uv.x * 60.0);
+    params: { ...MOTION_PARAMS },
+    frag: frag(`${ROT}
+  float phase = floor(u_time * 8.0 * u_speed);
+  float col = floor(uv.x * 60.0 / u_size);
   float lit = float(mod(col + phase, 3.0) < 0.5);
   float hue = fract(phase / 8.0 * 0.3);
-  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, lit)), 1.0);`, H),
+  fragColor = vec4(hsv2rgb(vec3(hue, 1.0, lit)), 1.0);`, H, ROT_U),
   },
 
   sinelon: {
     label: 'Sinelon',
     category: 'Movement',
-    frag: frag(`
-  float dx = fract(u_time * 0.38);
-  float dy = 0.5 + 0.42 * sin(u_time * 2.5);
-  float dist = length(v_uv - vec2(dx, dy));
-  float head = 1.0 - smoothstep(0.0, 0.055, dist);
-  float glow = (1.0 - smoothstep(0.0, 0.14, dist)) * 0.18;
-  float xBehind = fract(dx - v_uv.x);
-  float trail = (1.0 - smoothstep(0.0, 0.22, xBehind)) * 0.12
-              * (1.0 - smoothstep(0.0, 0.09, abs(v_uv.y - dy)));
+    params: { ...MOTION_PARAMS },
+    frag: frag(`${ROT}
+  float dx = fract(u_time * 0.38 * u_speed);
+  float dy = 0.5 + 0.42 * sin(u_time * 2.5 * u_speed);
+  float dist = length(uv - vec2(dx, dy));
+  float head = 1.0 - smoothstep(0.0, 0.055 * u_size, dist);
+  float glow = (1.0 - smoothstep(0.0, 0.14 * u_size, dist)) * 0.18;
+  float xBehind = fract(dx - uv.x);
+  float trail = (1.0 - smoothstep(0.0, 0.22 * u_size, xBehind)) * 0.12
+              * (1.0 - smoothstep(0.0, 0.09 * u_size, abs(uv.y - dy)));
   float i = max(max(head, glow), trail);
-  fragColor = vec4(hsv2rgb(vec3(fract(u_time * 0.14), 1.0, 1.0)) * i, 1.0);`, H),
+  fragColor = vec4(hsv2rgb(vec3(fract(u_time * 0.14), 1.0, 1.0)) * i, 1.0);`, H, ROT_U),
   },
 
   // ─── Color ───────────────────────────────────────────────────────────────
