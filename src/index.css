@@ -449,6 +449,38 @@ kbd.shortcut-badge.capturing {
   text-align: right;
 }
 
+/* ── File menu dropdown ─────────────────────────────────────────────────────── */
+.file-menu-wrap {
+  position: relative;
+}
+
+.file-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 160px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.55);
+  z-index: 200;
+}
+
+.file-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 14px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.file-menu-item:hover { background: var(--bg3); border: none; }
+
 /* ── Scene Panel ────────────────────────────────────────────────────────────── */
 .scene-panel { width: 210px; flex-shrink: 0; }
 
