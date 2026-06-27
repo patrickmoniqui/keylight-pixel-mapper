@@ -1,33 +1,53 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import { Toolbar } from './ui/Toolbar';
 import { FixturePanel } from './ui/FixturePanel';
 import { PropertiesPanel } from './ui/PropertiesPanel';
+import { ScenePanel } from './ui/ScenePanel';
 import { PixelCanvas } from './canvas/PixelCanvas';
 import { useStore } from './store';
 
 export default function App() {
-  const strips = useStore((s) => s.strips);
-  const activeEffect = useStore((s) => s.activeEffect);
-  const output = useStore((s) => s.output);
-  const selectedIds = useStore((s) => s.selectedStripIds);
-  const setFps = useStore((s) => s.setFps);
-  const setBpm = useStore((s) => s.setBpm);
-  const updateStrip = useStore((s) => s.updateStrip);
+  const strips         = useStore((s) => s.strips);
+  const activeEffect   = useStore((s) => s.activeEffect);
+  const output         = useStore((s) => s.output);
+  const selectedIds    = useStore((s) => s.selectedStripIds);
+  const setFps         = useStore((s) => s.setFps);
+  const setBpm         = useStore((s) => s.setBpm);
+  const updateStrip    = useStore((s) => s.updateStrip);
   const setSelectedStrips = useStore((s) => s.setSelectedStrips);
-  const removeStrip = useStore((s) => s.removeStrip);
+  const removeStrip    = useStore((s) => s.removeStrip);
   const duplicateStrip = useStore((s) => s.duplicateStrip);
   const setActiveEffect = useStore((s) => s.setActiveEffect);
-  const setOutput = useStore((s) => s.setOutput);
+  const setOutput      = useStore((s) => s.setOutput);
   const effectShortcuts = useStore((s) => s.effectShortcuts);
-  const effectParams = useStore((s) => s.effectParams);
-  const audioDeviceId = useStore((s) => s.audioDeviceId);
-  const showGrid = useStore((s) => s.showGrid);
-  const toggleGrid = useStore((s) => s.toggleGrid);
-  const targetFps = useStore((s) => s.targetFps);
+  const effectParams   = useStore((s) => s.effectParams);
+  const audioDeviceId  = useStore((s) => s.audioDeviceId);
+  const showGrid       = useStore((s) => s.showGrid);
+  const toggleGrid     = useStore((s) => s.toggleGrid);
+  const targetFps      = useStore((s) => s.targetFps);
   const snapshotStrips = useStore((s) => s.snapshotStrips);
-  const undo = useStore((s) => s.undo);
-  const redo = useStore((s) => s.redo);
+  const undo           = useStore((s) => s.undo);
+  const redo           = useStore((s) => s.redo);
+  const sceneMode      = useStore((s) => s.sceneMode);
+  const sceneLayers    = useStore((s) => s.sceneLayers);
+  const updateSceneLayer = useStore((s) => s.updateSceneLayer);
+
+  const [drawingLayerId, setDrawingLayerId] = useState<string | null>(null);
+
+  // Clear drawing mode if the layer is deleted
+  useEffect(() => {
+    if (drawingLayerId && !sceneLayers.find((l) => l.id === drawingLayerId)) {
+      setDrawingLayerId(null);
+    }
+  }, [drawingLayerId, sceneLayers]);
+
+  const handleAddPolygonPoint = useCallback((layerId: string, pt: { x: number; y: number }) => {
+    const layer = sceneLayers.find((l) => l.id === layerId);
+    if (!layer) return;
+    const points = [...(layer.mask.points ?? []), pt];
+    updateSceneLayer(layerId, { mask: { ...layer.mask, points } });
+  }, [sceneLayers, updateSceneLayer]);
 
   const stripsRef = useRef(strips);
   const selectedIdsRef = useRef(selectedIds);
@@ -38,16 +58,13 @@ export default function App() {
   outputRef.current = output;
   effectShortcutsRef.current = effectShortcuts;
 
-  // Debounce snapshot for keyboard nudge so holding arrow doesn't spam history
   const lastNudgeSnapshotRef = useRef(0);
 
-  // Global keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as Element).tagName;
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
-      // Effect shortcuts
       const matched = Object.entries(effectShortcutsRef.current).find(([, k]) => k === e.key);
       if (matched && !e.ctrlKey && !e.metaKey && !e.altKey) {
         setActiveEffect(matched[0]);
@@ -104,7 +121,6 @@ export default function App() {
           const ids = selectedIdsRef.current;
           if (!ids.length) break;
           e.preventDefault();
-          // Snapshot at most once per 600ms so holding arrow makes one undo entry
           const now = Date.now();
           if (now - lastNudgeSnapshotRef.current > 600) {
             snapshotStrips();
@@ -138,7 +154,10 @@ export default function App() {
     <div className="app-layout">
       <Toolbar />
       <div className="main-area">
-        <FixturePanel />
+        {sceneMode
+          ? <ScenePanel drawingLayerId={drawingLayerId} setDrawingLayerId={setDrawingLayerId} />
+          : <FixturePanel />
+        }
         <div className="canvas-wrap">
           <PixelCanvas
             strips={strips}
@@ -155,6 +174,10 @@ export default function App() {
             showGrid={showGrid}
             targetFps={targetFps}
             audioDeviceId={audioDeviceId}
+            sceneMode={sceneMode}
+            sceneLayers={sceneLayers}
+            drawingLayerId={drawingLayerId}
+            onAddPolygonPoint={handleAddPolygonPoint}
           />
         </div>
         <PropertiesPanel />

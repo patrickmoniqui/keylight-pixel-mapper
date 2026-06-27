@@ -1,10 +1,56 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Strip, applyChannelOrder } from '../fixtures/types';
-import { VERTEX_SHADER, EFFECTS } from './shaders';
+import { VERTEX_SHADER, EFFECTS, COMPOSITE_FRAG, BLIT_FRAG } from './shaders';
+import { SceneLayer, LayerMask } from '../scene/types';
 
 function hexToRgb(hex: string): [number, number, number] {
   const n = parseInt(hex.replace('#', ''), 16);
   return [(n >> 16 & 255) / 255, (n >> 8 & 255) / 255, (n & 255) / 255];
+}
+
+function rasterizeMask(mask: LayerMask, strips: Strip[], W: number, H: number): Uint8Array {
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d')!;
+
+  if (mask.type === 'full') {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, H);
+  } else if (mask.type === 'polygon') {
+    const pts = mask.points ?? [];
+    if (pts.length >= 3) {
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x * W, pts[0].y * H);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * W, pts[i].y * H);
+      ctx.closePath();
+      ctx.fill();
+    }
+  } else if (mask.type === 'fixtures') {
+    const ids = new Set(mask.fixtureIds ?? []);
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#fff';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 20;
+    for (const strip of strips) {
+      if (!ids.has(strip.id)) continue;
+      const rad = (strip.angle * Math.PI) / 180;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      ctx.beginPath();
+      for (let i = 0; i < strip.pixelCount; i++) {
+        const px = (strip.x + cos * i * strip.spacing) * W;
+        const py = (strip.y + sin * i * strip.spacing) * H;
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+    }
+  }
+
+  const d = ctx.getImageData(0, 0, W, H).data;
+  const result = new Uint8Array(W * H);
+  for (let i = 0; i < result.length; i++) result[i] = d[i * 4];
+  return result;
 }
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -24,6 +70,10 @@ interface Props {
   showGrid: boolean;
   targetFps: number;
   audioDeviceId: string;
+  sceneMode: boolean;
+  sceneLayers: SceneLayer[];
+  drawingLayerId: string | null;
+  onAddPolygonPoint: (layerId: string, pt: { x: number; y: number }) => void;
 }
 
 // ─── WebGL helpers ────────────────────────────────────────────────────────────
@@ -169,10 +219,8 @@ interface DragState {
   type: DragType;
   startSvgX: number;
   startSvgY: number;
-  // Single-strip
   stripId: string;
   initStrip: Strip;
-  // Multi-strip
   initStrips: Strip[];
   centroidNX: number;
   centroidNY: number;
@@ -197,6 +245,10 @@ export function PixelCanvas({
   showGrid,
   targetFps,
   audioDeviceId,
+  sceneMode,
+  sceneLayers,
+  drawingLayerId,
+  onAddPolygonPoint,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -218,8 +270,27 @@ export function PixelCanvas({
   const dragRef = useRef<DragState | null>(null);
   const [dragType, setDragType] = useState<DragType | null>(null);
 
+  // Scene rendering resources
+  const sceneFBORef = useRef<{
+    layerFBO: WebGLFramebuffer; layerTex: WebGLTexture;
+    accumTexA: WebGLTexture; accumFBO_A: WebGLFramebuffer;
+    accumTexB: WebGLTexture; accumFBO_B: WebGLFramebuffer;
+    maskTex: WebGLTexture;
+    compositeProgram: WebGLProgram; blitProgram: WebGLProgram;
+  } | null>(null);
+  const maskCacheRef = useRef(new Map<string, { data: Uint8Array; hash: string }>());
+
+  // Polygon drawing state
+  const [previewPoint, setPreviewPoint] = useState<{ x: number; y: number } | null>(null);
+  const drawingLayerIdRef = useRef(drawingLayerId);
+  drawingLayerIdRef.current = drawingLayerId;
+
+  useEffect(() => { if (!drawingLayerId) setPreviewPoint(null); }, [drawingLayerId]);
+
   // ── Audio ────────────────────────────────────────────────────────────────
-  const isReactiveEffect = EFFECTS[activeEffect]?.category === 'Reactive';
+  const isReactiveScene = sceneMode && sceneLayers.some((l) => l.visible && EFFECTS[l.effect]?.category === 'Reactive');
+  const isReactiveEffect = (!sceneMode && EFFECTS[activeEffect]?.category === 'Reactive') || isReactiveScene;
+
   useEffect(() => {
     if (!isReactiveEffect) return;
     let ctx: AudioContext;
@@ -259,6 +330,43 @@ export function PixelCanvas({
       try { programsRef.current[name] = createProgram(gl, VERTEX_SHADER, def.frag); }
       catch (e) { console.error(`Shader ${name}:`, e); }
     }
+
+    // Scene compositing FBOs
+    const W = canvas.width, H = canvas.height;
+    const mkTex = (): WebGLTexture => {
+      const tex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return tex;
+    };
+    const mkFBO = (tex: WebGLTexture): WebGLFramebuffer => {
+      const fbo = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return fbo;
+    };
+    const layerTex = mkTex();
+    const accumTexA = mkTex();
+    const accumTexB = mkTex();
+    const maskTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, maskTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    try {
+      sceneFBORef.current = {
+        layerFBO: mkFBO(layerTex), layerTex,
+        accumTexA, accumFBO_A: mkFBO(accumTexA),
+        accumTexB, accumFBO_B: mkFBO(accumTexB),
+        maskTex,
+        compositeProgram: createProgram(gl, VERTEX_SHADER, COMPOSITE_FRAG),
+        blitProgram: createProgram(gl, VERTEX_SHADER, BLIT_FRAG),
+      };
+    } catch (e) { console.error('Scene shaders:', e); }
   }, []);
 
   // ── Render loop ──────────────────────────────────────────────────────────
@@ -267,12 +375,16 @@ export function PixelCanvas({
   const effectParamsRef = useRef(effectParams);
   const outputRef = useRef(outputEnabled);
   const targetFpsRef = useRef(targetFps);
+  const sceneModeRef = useRef(sceneMode);
+  const sceneLayersRef = useRef(sceneLayers);
   const lastOutputTimeRef = useRef(0);
   stripsRef.current = strips;
   effectRef.current = activeEffect;
   effectParamsRef.current = effectParams;
   outputRef.current = outputEnabled;
   targetFpsRef.current = targetFps;
+  sceneModeRef.current = sceneMode;
+  sceneLayersRef.current = sceneLayers;
 
   const startLoop = useCallback(() => {
     const gl = glRef.current;
@@ -281,76 +393,226 @@ export function PixelCanvas({
     const t0 = performance.now();
     const loop = () => {
       const t = (performance.now() - t0) / 1000;
-      const eff = effectRef.current;
-      const prog = programsRef.current[eff];
-      if (!prog) { rafRef.current = requestAnimationFrame(loop); return; }
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      gl.useProgram(prog);
-      const posLoc = gl.getAttribLocation(prog, 'a_position');
-      gl.enableVertexAttribArray(posLoc);
-      gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-      const timeLoc = gl.getUniformLocation(prog, 'u_time');
-      if (timeLoc) gl.uniform1f(timeLoc, t);
-      const effDef = EFFECTS[eff];
-      if (effDef?.params) {
-        const paramVals = effectParamsRef.current[eff] ?? {};
-        for (const [key, paramDef] of Object.entries(effDef.params)) {
-          const val = key in paramVals ? paramVals[key] : paramDef.default;
-          const loc = gl.getUniformLocation(prog, `u_${key}`);
-          if (!loc) continue;
-          if (paramDef.type === 'color') {
-            const [r, g, b] = hexToRgb(val as string);
-            gl.uniform3f(loc, r, g, b);
-          } else {
-            gl.uniform1f(loc, val as number);
+
+      // ── Scene rendering ────────────────────────────────────────────────
+      if (sceneModeRef.current && sceneFBORef.current) {
+        const scene = sceneFBORef.current;
+        const W = canvas.width, H = canvas.height;
+        const layers = sceneLayersRef.current.filter((l) => l.visible);
+
+        // Upload audio once per frame for all reactive layers
+        let hasAudio = false;
+        if (audioRef.current && layers.some((l) => EFFECTS[l.effect]?.category === 'Reactive')) {
+          const { analyser, data, texture } = audioRef.current;
+          analyser.getByteFrequencyData(data);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, data.length, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+          hasAudio = true;
+          const bpm = bpmRef.current;
+          let bassEnergy = 0;
+          for (let i = 0; i < 4; i++) bassEnergy += data[i] / 255;
+          bassEnergy /= 4;
+          bpm.energyHistory[bpm.histIdx] = bassEnergy;
+          bpm.histIdx = (bpm.histIdx + 1) % bpm.energyHistory.length;
+          let avgEnergy = 0;
+          for (let i = 0; i < bpm.energyHistory.length; i++) avgEnergy += bpm.energyHistory[i];
+          avgEnergy /= bpm.energyHistory.length;
+          const nowMs = performance.now();
+          const timeSinceBeat = nowMs - bpm.lastBeatTime;
+          if (bassEnergy > avgEnergy * 1.4 && bassEnergy > 0.1 && timeSinceBeat > 250) {
+            if (bpm.lastBeatTime > 0 && timeSinceBeat < 2000) {
+              bpm.beatIntervals.push(timeSinceBeat);
+              if (bpm.beatIntervals.length > 8) bpm.beatIntervals.shift();
+              if (bpm.beatIntervals.length >= 2) {
+                const avg = bpm.beatIntervals.reduce((a, b) => a + b) / bpm.beatIntervals.length;
+                const newBpm = Math.round(60000 / avg);
+                if (newBpm !== bpm.bpm) { bpm.bpm = newBpm; onBpmRef.current(newBpm); }
+              }
+            }
+            bpm.lastBeatTime = nowMs;
+            bpm.beat = 1.0;
           }
+          bpm.beat *= 0.88;
         }
-      }
-      if (EFFECTS[eff]?.category === 'Reactive' && audioRef.current) {
-        const { analyser, data, texture } = audioRef.current;
-        analyser.getByteFrequencyData(data);
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, texture);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, data.length, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
-        const audioLoc = gl.getUniformLocation(prog, 'u_audio');
-        if (audioLoc) gl.uniform1i(audioLoc, 0);
 
-        // BPM detection via bass energy (bins 0-3 ≈ 0-1000 Hz)
-        const bpm = bpmRef.current;
-        let bassEnergy = 0;
-        for (let i = 0; i < 4; i++) bassEnergy += data[i] / 255;
-        bassEnergy /= 4;
-        bpm.energyHistory[bpm.histIdx] = bassEnergy;
-        bpm.histIdx = (bpm.histIdx + 1) % bpm.energyHistory.length;
-        let avgEnergy = 0;
-        for (let i = 0; i < bpm.energyHistory.length; i++) avgEnergy += bpm.energyHistory[i];
-        avgEnergy /= bpm.energyHistory.length;
+        // Ping-pong accumulation
+        let readTex = scene.accumTexA, readFBO = scene.accumFBO_A;
+        let writeTex = scene.accumTexB, writeFBO = scene.accumFBO_B;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, readFBO);
+        gl.viewport(0, 0, W, H);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
 
-        const nowMs = performance.now();
-        const timeSinceBeat = nowMs - bpm.lastBeatTime;
-        if (bassEnergy > avgEnergy * 1.4 && bassEnergy > 0.1 && timeSinceBeat > 250) {
-          if (bpm.lastBeatTime > 0 && timeSinceBeat < 2000) {
-            bpm.beatIntervals.push(timeSinceBeat);
-            if (bpm.beatIntervals.length > 8) bpm.beatIntervals.shift();
-            if (bpm.beatIntervals.length >= 2) {
-              const avgInterval = bpm.beatIntervals.reduce((a, b) => a + b) / bpm.beatIntervals.length;
-              const newBpm = Math.round(60000 / avgInterval);
-              if (newBpm !== bpm.bpm) { bpm.bpm = newBpm; onBpmRef.current(newBpm); }
+        for (const layer of layers) {
+          const prog = programsRef.current[layer.effect];
+          if (!prog) continue;
+
+          // 1. Render effect to layerFBO
+          gl.bindFramebuffer(gl.FRAMEBUFFER, scene.layerFBO);
+          gl.viewport(0, 0, W, H);
+          gl.useProgram(prog);
+          const posLoc = gl.getAttribLocation(prog, 'a_position');
+          gl.enableVertexAttribArray(posLoc);
+          gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+          const timeLoc = gl.getUniformLocation(prog, 'u_time');
+          if (timeLoc) gl.uniform1f(timeLoc, t);
+          const effDef = EFFECTS[layer.effect];
+          if (effDef?.params) {
+            for (const [key, paramDef] of Object.entries(effDef.params)) {
+              const val = key in layer.effectParams ? layer.effectParams[key] : paramDef.default;
+              const loc = gl.getUniformLocation(prog, `u_${key}`);
+              if (!loc) continue;
+              if (paramDef.type === 'color') {
+                const [r, g, b] = hexToRgb(val as string);
+                gl.uniform3f(loc, r, g, b);
+              } else {
+                gl.uniform1f(loc, val as number);
+              }
             }
           }
-          bpm.lastBeatTime = nowMs;
-          bpm.beat = 1.0;
-        }
-        bpm.beat *= 0.88;
+          if (effDef?.category === 'Reactive' && hasAudio && audioRef.current) {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, audioRef.current.texture);
+            const audioLoc = gl.getUniformLocation(prog, 'u_audio');
+            if (audioLoc) gl.uniform1i(audioLoc, 0);
+            const beatLoc = gl.getUniformLocation(prog, 'u_beat');
+            if (beatLoc) gl.uniform1f(beatLoc, bpmRef.current.beat);
+            const bpmLoc = gl.getUniformLocation(prog, 'u_bpm');
+            if (bpmLoc) gl.uniform1f(bpmLoc, bpmRef.current.bpm);
+          }
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        const beatLoc = gl.getUniformLocation(prog, 'u_beat');
-        if (beatLoc) gl.uniform1f(beatLoc, bpm.beat);
-        const bpmLoc = gl.getUniformLocation(prog, 'u_bpm');
-        if (bpmLoc) gl.uniform1f(bpmLoc, bpm.bpm);
+          // 2. Compute/upload mask texture
+          const maskHash = JSON.stringify(layer.mask);
+          const cached = maskCacheRef.current.get(layer.id);
+          if (!cached || cached.hash !== maskHash) {
+            maskCacheRef.current.set(layer.id, {
+              data: rasterizeMask(layer.mask, stripsRef.current, W, H),
+              hash: maskHash,
+            });
+          }
+          const maskData = maskCacheRef.current.get(layer.id)!.data;
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, scene.maskTex);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, W, H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, maskData);
+
+          // 3. Composite: readTex + layerTex + mask → writeFBO
+          gl.bindFramebuffer(gl.FRAMEBUFFER, writeFBO);
+          gl.viewport(0, 0, W, H);
+          gl.useProgram(scene.compositeProgram);
+          const cpLoc = gl.getAttribLocation(scene.compositeProgram, 'a_position');
+          gl.enableVertexAttribArray(cpLoc);
+          gl.vertexAttribPointer(cpLoc, 2, gl.FLOAT, false, 0, 0);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, readTex);
+          const baseLoc = gl.getUniformLocation(scene.compositeProgram, 'u_base');
+          if (baseLoc) gl.uniform1i(baseLoc, 0);
+          gl.activeTexture(gl.TEXTURE1);
+          gl.bindTexture(gl.TEXTURE_2D, scene.layerTex);
+          const layerLoc = gl.getUniformLocation(scene.compositeProgram, 'u_layer');
+          if (layerLoc) gl.uniform1i(layerLoc, 1);
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, scene.maskTex);
+          const maskLoc = gl.getUniformLocation(scene.compositeProgram, 'u_mask');
+          if (maskLoc) gl.uniform1i(maskLoc, 2);
+          const opacLoc = gl.getUniformLocation(scene.compositeProgram, 'u_opacity');
+          if (opacLoc) gl.uniform1f(opacLoc, layer.opacity);
+          const blendLoc = gl.getUniformLocation(scene.compositeProgram, 'u_blend');
+          if (blendLoc) {
+            const bIdx = layer.blendMode === 'add' ? 1 : layer.blendMode === 'multiply' ? 2 : layer.blendMode === 'screen' ? 3 : 0;
+            gl.uniform1i(blendLoc, bIdx);
+          }
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+          // Swap ping-pong buffers
+          [readTex, writeTex] = [writeTex, readTex];
+          [readFBO, writeFBO] = [writeFBO, readFBO];
+        }
+
+        // 4. Blit accumulated result to screen
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, W, H);
+        gl.useProgram(scene.blitProgram);
+        const bpLoc = gl.getAttribLocation(scene.blitProgram, 'a_position');
+        gl.enableVertexAttribArray(bpLoc);
+        gl.vertexAttribPointer(bpLoc, 2, gl.FLOAT, false, 0, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, readTex);
+        const texLoc = gl.getUniformLocation(scene.blitProgram, 'u_tex');
+        if (texLoc) gl.uniform1i(texLoc, 0);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      } else {
+        // ── Normal single-effect rendering ───────────────────────────────
+        const eff = effectRef.current;
+        const prog = programsRef.current[eff];
+        if (!prog) { rafRef.current = requestAnimationFrame(loop); return; }
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        gl.useProgram(prog);
+        const posLoc = gl.getAttribLocation(prog, 'a_position');
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+        const timeLoc = gl.getUniformLocation(prog, 'u_time');
+        if (timeLoc) gl.uniform1f(timeLoc, t);
+        const effDef = EFFECTS[eff];
+        if (effDef?.params) {
+          const paramVals = effectParamsRef.current[eff] ?? {};
+          for (const [key, paramDef] of Object.entries(effDef.params)) {
+            const val = key in paramVals ? paramVals[key] : paramDef.default;
+            const loc = gl.getUniformLocation(prog, `u_${key}`);
+            if (!loc) continue;
+            if (paramDef.type === 'color') {
+              const [r, g, b] = hexToRgb(val as string);
+              gl.uniform3f(loc, r, g, b);
+            } else {
+              gl.uniform1f(loc, val as number);
+            }
+          }
+        }
+        if (EFFECTS[eff]?.category === 'Reactive' && audioRef.current) {
+          const { analyser, data, texture } = audioRef.current;
+          analyser.getByteFrequencyData(data);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, texture);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, data.length, 1, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+          const audioLoc = gl.getUniformLocation(prog, 'u_audio');
+          if (audioLoc) gl.uniform1i(audioLoc, 0);
+          const bpm = bpmRef.current;
+          let bassEnergy = 0;
+          for (let i = 0; i < 4; i++) bassEnergy += data[i] / 255;
+          bassEnergy /= 4;
+          bpm.energyHistory[bpm.histIdx] = bassEnergy;
+          bpm.histIdx = (bpm.histIdx + 1) % bpm.energyHistory.length;
+          let avgEnergy = 0;
+          for (let i = 0; i < bpm.energyHistory.length; i++) avgEnergy += bpm.energyHistory[i];
+          avgEnergy /= bpm.energyHistory.length;
+          const nowMs = performance.now();
+          const timeSinceBeat = nowMs - bpm.lastBeatTime;
+          if (bassEnergy > avgEnergy * 1.4 && bassEnergy > 0.1 && timeSinceBeat > 250) {
+            if (bpm.lastBeatTime > 0 && timeSinceBeat < 2000) {
+              bpm.beatIntervals.push(timeSinceBeat);
+              if (bpm.beatIntervals.length > 8) bpm.beatIntervals.shift();
+              if (bpm.beatIntervals.length >= 2) {
+                const avgInterval = bpm.beatIntervals.reduce((a, b) => a + b) / bpm.beatIntervals.length;
+                const newBpm = Math.round(60000 / avgInterval);
+                if (newBpm !== bpm.bpm) { bpm.bpm = newBpm; onBpmRef.current(newBpm); }
+              }
+            }
+            bpm.lastBeatTime = nowMs;
+            bpm.beat = 1.0;
+          }
+          bpm.beat *= 0.88;
+          const beatLoc = gl.getUniformLocation(prog, 'u_beat');
+          if (beatLoc) gl.uniform1f(beatLoc, bpm.beat);
+          const bpmLoc = gl.getUniformLocation(prog, 'u_bpm');
+          if (bpmLoc) gl.uniform1f(bpmLoc, bpm.bpm);
+        }
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      // ── Shared: DMX output + FPS counter ─────────────────────────────
       const now = performance.now();
-      // Throttle DMX output to targetFps; canvas always renders at native 60fps
       const outputInterval = 1000 / targetFpsRef.current;
       if (
         outputRef.current &&
@@ -433,6 +695,12 @@ export function PixelCanvas({
   }, [getSvgPos, onSnapshot]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    // Drawing mode: track cursor for polygon preview
+    if (drawingLayerIdRef.current) {
+      const pos = getSvgPos(e);
+      setPreviewPoint({ x: pos.x / 960, y: pos.y / 540 });
+      return;
+    }
     const drag = dragRef.current;
     if (!drag) return;
     const pos = getSvgPos(e);
@@ -496,7 +764,8 @@ export function PixelCanvas({
 
   // ── Cursor ───────────────────────────────────────────────────────────────
   const svgCursor =
-    dragType === 'rotate' || dragType === 'rotate-multi' ? 'grabbing'
+    drawingLayerId ? 'crosshair'
+    : dragType === 'rotate' || dragType === 'rotate-multi' ? 'grabbing'
     : dragType === 'spacing' ? 'ew-resize'
     : dragType === 'scale-multi' ? 'nwse-resize'
     : dragType === 'move' || dragType === 'move-multi' ? 'move'
@@ -529,9 +798,16 @@ export function PixelCanvas({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
       >
-        {/* Deselect on empty canvas click */}
+        {/* Background: deselect on click or add polygon vertex in draw mode */}
         <rect x={0} y={0} width={960} height={540} fill="transparent"
-          onPointerDown={() => { if (!dragRef.current) onSelectStrips([]); }} />
+          onPointerDown={(e) => {
+            if (drawingLayerIdRef.current) {
+              const pos = getSvgPos(e);
+              onAddPolygonPoint(drawingLayerIdRef.current, { x: pos.x / 960, y: pos.y / 540 });
+              return;
+            }
+            if (!dragRef.current) onSelectStrips([]);
+          }} />
 
         {/* Grid overlay */}
         {showGrid && <GridOverlay />}
@@ -547,22 +823,20 @@ export function PixelCanvas({
 
           return (
             <g key={strip.id}>
-              {/* Axis line (single-select only) */}
               {isSel && !isMulti && (
                 <line x1={anchor.x} y1={anchor.y} x2={lastDot.x} y2={lastDot.y}
                   stroke="#0af" strokeWidth={0.8} strokeDasharray="5,4" opacity={0.45}
                   pointerEvents="none" />
               )}
 
-              {/* LED dots */}
               {dots.map((dot, i) => (
                 <circle key={i} cx={dot.x} cy={dot.y} r={dotR}
                   fill={dotFill} stroke={dotStroke}
                   strokeWidth={isSel ? 1.5 : 0.5} opacity={0.9}
-                  style={{ cursor: isSel && isMulti ? 'move' : isSel ? 'move' : 'pointer' }}
+                  style={{ cursor: drawingLayerId ? 'crosshair' : isSel && isMulti ? 'move' : isSel ? 'move' : 'pointer' }}
                   onPointerDown={(e) => {
+                    if (drawingLayerIdRef.current) return; // block fixture interaction in draw mode
                     if (e.shiftKey) {
-                      // Shift+click: toggle this strip in selection
                       const newIds = selectedStripIds.includes(strip.id)
                         ? selectedStripIds.filter((id) => id !== strip.id)
                         : [...selectedStripIds, strip.id];
@@ -570,7 +844,6 @@ export function PixelCanvas({
                       return;
                     }
                     if (isSel && isMulti && multiGizmo) {
-                      // Already part of multi-selection: drag all together
                       startMultiDrag(e, 'move-multi', selectedStrips, multiGizmo.centroidNX, multiGizmo.centroidNY);
                     } else {
                       startDrag(e, 'move', strip);
@@ -579,7 +852,6 @@ export function PixelCanvas({
                 />
               ))}
 
-              {/* ── Single-select gizmos ── */}
               {isSel && !isMulti && strip.pixelCount >= 1 && (
                 <>
                   <circle cx={anchor.x} cy={anchor.y} r={8}
@@ -633,12 +905,10 @@ export function PixelCanvas({
           const { bx, by, bw, bh, centroidNX, centroidNY, centroidSX, centroidSY, rotHandle, scaleHandle } = multiGizmo;
           return (
             <g>
-              {/* Bounding box */}
               <rect x={bx} y={by} width={bw} height={bh}
                 fill="none" stroke="#0af" strokeWidth={1}
                 strokeDasharray="6,4" opacity={0.5} pointerEvents="none" />
 
-              {/* Center move handle */}
               <g style={{ cursor: 'move' }}
                 onPointerDown={(e) => startMultiDrag(e, 'move-multi', selectedStrips, centroidNX, centroidNY)}>
                 <circle cx={centroidSX} cy={centroidSY} r={10} fill="#0af" opacity={0.15} />
@@ -649,11 +919,9 @@ export function PixelCanvas({
                 <circle cx={centroidSX} cy={centroidSY} r={3} fill="#0af" />
               </g>
 
-              {/* Line to rotation handle */}
               <line x1={centroidSX} y1={by} x2={rotHandle.x} y2={rotHandle.y}
                 stroke="#0af" strokeWidth={0.8} strokeDasharray="3,3" opacity={0.4} pointerEvents="none" />
 
-              {/* Rotation handle */}
               <g style={{ cursor: 'grab' }}
                 onPointerDown={(e) => startMultiDrag(e, 'rotate-multi', selectedStrips, centroidNX, centroidNY)}>
                 <circle cx={rotHandle.x} cy={rotHandle.y} r={9} fill="#0af" stroke="#fff" strokeWidth={1.5} />
@@ -662,7 +930,6 @@ export function PixelCanvas({
                   fontSize={10} fill="#000" style={{ userSelect: 'none' }} pointerEvents="none">⟳</text>
               </g>
 
-              {/* Scale handle (bottom-right corner) */}
               <g style={{ cursor: 'nwse-resize' }}
                 onPointerDown={(e) => startMultiDrag(e, 'scale-multi', selectedStrips, centroidNX, centroidNY)}>
                 <rect x={scaleHandle.x - 7} y={scaleHandle.y - 7} width={14} height={14}
@@ -672,10 +939,46 @@ export function PixelCanvas({
                   fontSize={9} fill="#000" style={{ userSelect: 'none' }} pointerEvents="none">⤡</text>
               </g>
 
-              {/* Selection count label */}
               <text x={bx + 4} y={by - 6} fontSize={9} fill="#0af" opacity={0.7} pointerEvents="none">
                 {selectedStripIds.length} fixtures
               </text>
+            </g>
+          );
+        })()}
+
+        {/* ── Polygon drawing overlay ── */}
+        {drawingLayerId && (() => {
+          const layer = sceneLayers.find((l) => l.id === drawingLayerId);
+          if (!layer || layer.mask.type !== 'polygon') return null;
+          const pts = layer.mask.points ?? [];
+          const canPts = pts.map((p) => ({ x: p.x * 960, y: p.y * 540 }));
+          return (
+            <g>
+              {canPts.length >= 3 && (
+                <polygon
+                  points={canPts.map((p) => `${p.x},${p.y}`).join(' ')}
+                  fill="rgba(0,170,255,0.12)"
+                  stroke="#0af" strokeWidth={1.5} strokeDasharray="6,4"
+                  pointerEvents="none" />
+              )}
+              {canPts.map((p, i) => (
+                <circle key={i} cx={p.x} cy={p.y} r={5}
+                  fill={i === 0 && canPts.length >= 3 ? '#0f8' : '#0af'}
+                  stroke="#fff" strokeWidth={1.5} pointerEvents="none" />
+              ))}
+              {canPts.length > 0 && previewPoint && (
+                <line
+                  x1={canPts[canPts.length - 1].x} y1={canPts[canPts.length - 1].y}
+                  x2={previewPoint.x * 960} y2={previewPoint.y * 540}
+                  stroke="#0af" strokeWidth={1} strokeDasharray="4,4" opacity={0.6}
+                  pointerEvents="none" />
+              )}
+              {canPts.length === 0 && (
+                <text x={480} y={270} textAnchor="middle" dominantBaseline="middle"
+                  fontSize={14} fill="#0af" opacity={0.5} pointerEvents="none">
+                  Click to add polygon vertices
+                </text>
+              )}
             </g>
           );
         })()}

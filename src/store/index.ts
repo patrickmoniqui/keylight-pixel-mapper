@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Strip, OutputConfig } from '../fixtures/types';
+import { SceneLayer } from '../scene/types';
 
 const DEFAULT_SHORTCUTS: Record<string, string> = {
   solid:   '1',
@@ -54,6 +55,16 @@ interface AppState {
   audioDeviceId: string;
   setAudioDeviceId: (id: string) => void;
   loadStrips: (strips: Strip[]) => void;
+  // Scene mode
+  sceneMode: boolean;
+  sceneLayers: SceneLayer[];
+  activeLayerId: string | null;
+  setSceneMode: (enabled: boolean) => void;
+  addSceneLayer: (layer: SceneLayer) => void;
+  updateSceneLayer: (id: string, updates: Partial<SceneLayer>) => void;
+  removeSceneLayer: (id: string) => void;
+  moveSceneLayer: (id: string, dir: 'up' | 'down') => void;
+  setActiveLayerId: (id: string | null) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -76,6 +87,9 @@ export const useStore = create<AppState>()(
       showGrid: false,
       targetFps: 30,
       audioDeviceId: '',
+      sceneMode: false,
+      sceneLayers: [] as SceneLayer[],
+      activeLayerId: null as string | null,
 
       addStrip: (strip) =>
         set((s) => ({
@@ -173,6 +187,26 @@ export const useStore = create<AppState>()(
       toggleGrid: () => set((s) => ({ showGrid: !s.showGrid })),
       setTargetFps: (fps) => set({ targetFps: fps }),
       setAudioDeviceId: (id) => set({ audioDeviceId: id }),
+      setSceneMode: (enabled) => set({ sceneMode: enabled }),
+      addSceneLayer: (layer) => set((s) => ({ sceneLayers: [...s.sceneLayers, layer] })),
+      updateSceneLayer: (id, updates) =>
+        set((s) => ({ sceneLayers: s.sceneLayers.map((l) => (l.id === id ? { ...l, ...updates } : l)) })),
+      removeSceneLayer: (id) =>
+        set((s) => ({
+          sceneLayers: s.sceneLayers.filter((l) => l.id !== id),
+          activeLayerId: s.activeLayerId === id ? null : s.activeLayerId,
+        })),
+      moveSceneLayer: (id, dir) =>
+        set((s) => {
+          const idx = s.sceneLayers.findIndex((l) => l.id === id);
+          if (idx < 0) return s;
+          const newIdx = dir === 'up' ? idx + 1 : idx - 1;
+          if (newIdx < 0 || newIdx >= s.sceneLayers.length) return s;
+          const arr = [...s.sceneLayers];
+          [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+          return { sceneLayers: arr };
+        }),
+      setActiveLayerId: (id) => set({ activeLayerId: id }),
       loadStrips: (strips) =>
         set((s) => ({
           past: pushPast(s.past, s.strips),
@@ -199,6 +233,8 @@ export const useStore = create<AppState>()(
         targetFps: state.targetFps,
         effectParams: state.effectParams,
         audioDeviceId: state.audioDeviceId,
+        sceneMode: state.sceneMode,
+        sceneLayers: state.sceneLayers,
         // past/future not persisted — history doesn't survive restarts
       }),
     }

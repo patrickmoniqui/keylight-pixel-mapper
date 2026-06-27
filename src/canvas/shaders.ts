@@ -464,3 +464,34 @@ export const EFFECTS: Record<string, EffectDef> = {
 };
 
 export const EFFECT_CATEGORIES = ['Basic', 'Movement', 'Color', 'Particle', 'Reactive'] as const;
+
+// Scene compositing shaders
+export const COMPOSITE_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D u_base;
+uniform sampler2D u_layer;
+uniform sampler2D u_mask;
+uniform float u_opacity;
+uniform int u_blend;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() {
+  vec4 base = texture(u_base, v_uv);
+  vec4 layer = texture(u_layer, v_uv);
+  float alpha = texture(u_mask, v_uv).r * u_opacity;
+  vec3 blended;
+  if (u_blend == 1) blended = min(base.rgb + layer.rgb, vec3(1.0));
+  else if (u_blend == 2) blended = base.rgb * layer.rgb;
+  else if (u_blend == 3) blended = 1.0 - (1.0 - base.rgb) * (1.0 - layer.rgb);
+  else blended = layer.rgb;
+  fragColor = vec4(mix(base.rgb, blended, alpha), 1.0);
+}`;
+
+export const BLIT_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D u_tex;
+in vec2 v_uv;
+out vec4 fragColor;
+void main() {
+  fragColor = texture(u_tex, v_uv);
+}`;

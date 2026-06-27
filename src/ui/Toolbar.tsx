@@ -36,6 +36,8 @@ export function Toolbar() {
   const canRedo       = useStore((s) => s.future.length > 0);
   const undo          = useStore((s) => s.undo);
   const redo          = useStore((s) => s.redo);
+  const sceneMode     = useStore((s) => s.sceneMode);
+  const setSceneMode  = useStore((s) => s.setSceneMode);
 
   const [capturing, setCapturing] = useState<string | null>(null);
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
@@ -152,6 +154,7 @@ export function Toolbar() {
         <button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)">↪ Redo</button>
         <div className="divider" />
         <button className={showGrid ? 'active' : ''} onClick={toggleGrid} title="Toggle grid (G)">⊞ Grid</button>
+        <button className={sceneMode ? 'active' : ''} onClick={() => setSceneMode(!sceneMode)} title="Scene mode — multi-layer compositing">⧉ Scene</button>
         <div className="divider" />
         <button onClick={exportPatch} title="Export fixtures to JSON">⬇ Export</button>
         <button onClick={() => importRef.current?.click()} title="Import fixtures from JSON">⬆ Import</button>
