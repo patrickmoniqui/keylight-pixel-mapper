@@ -6,4 +6,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   setOutputConfig: (config: { enabled: boolean; protocol: string; broadcastAddress: string }) =>
     ipcRenderer.send('output:config', config),
+
+  onMenuExport: (cb: () => void) => {
+    ipcRenderer.on('menu:export', cb);
+    return () => ipcRenderer.off('menu:export', cb);
+  },
+  onMenuImport: (cb: () => void) => {
+    ipcRenderer.on('menu:import', cb);
+    return () => ipcRenderer.off('menu:import', cb);
+  },
 });

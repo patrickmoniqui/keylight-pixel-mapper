@@ -41,18 +41,7 @@ export function Toolbar() {
 
   const [capturing, setCapturing] = useState<string | null>(null);
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
-  const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
-  const fileMenuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!fileMenuOpen) return;
-    const handler = (e: MouseEvent) => {
-      if (!fileMenuRef.current?.contains(e.target as Node)) setFileMenuOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [fileMenuOpen]);
 
   const isReactive = EFFECTS[active]?.category === 'Reactive';
 
@@ -90,6 +79,16 @@ export function Toolbar() {
     window.addEventListener('mousedown', handler);
     return () => window.removeEventListener('mousedown', handler);
   }, [capturing]);
+
+  // Listen for native menu File > Export / Import
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onMenuExport) return;
+    const offExport = api.onMenuExport(() => exportPatch());
+    const offImport = api.onMenuImport(() => importRef.current?.click());
+    return () => { offExport?.(); offImport?.(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggleOutput = () => {
     const next = !output.enabled;
@@ -167,27 +166,7 @@ export function Toolbar() {
         <button className={showGrid ? 'active' : ''} onClick={toggleGrid} title="Toggle grid (G)">⊞ Grid</button>
         <button className={sceneMode ? 'active' : ''} onClick={() => setSceneMode(!sceneMode)} title="Scene mode — multi-layer compositing">⧉ Scene</button>
         <div className="divider" />
-        <div className="file-menu-wrap" ref={fileMenuRef}>
-          <button
-            className={fileMenuOpen ? 'active' : ''}
-            onClick={() => setFileMenuOpen((v) => !v)}
-            title="File menu"
-          >
-            File ▾
-          </button>
-          {fileMenuOpen && (
-            <div className="file-dropdown">
-              <button className="file-menu-item" onClick={() => { exportPatch(); setFileMenuOpen(false); }}>
-                Export Patch…
-              </button>
-              <button className="file-menu-item" onClick={() => { importRef.current?.click(); setFileMenuOpen(false); }}>
-                Import Patch…
-              </button>
-            </div>
-          )}
-        </div>
         <input ref={importRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImport} />
-        <div className="divider" />
         <label className="fps-label">
           Out
           <select

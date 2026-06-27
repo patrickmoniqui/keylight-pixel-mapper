@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu } from 'electron';
 import path from 'node:path';
 import dgram from 'node:dgram';
 import started from 'electron-squirrel-startup';
@@ -6,6 +6,8 @@ import { buildArtDmx } from './output/artnet';
 import { buildSacnPacket, sacnMulticastAddress } from './output/sacn';
 
 if (started) app.quit();
+
+let mainWindow: BrowserWindow | null = null;
 
 interface OutputConfig {
   enabled: boolean;
@@ -56,7 +58,7 @@ ipcMain.on('output:config', (_event, config: OutputConfig) => {
 });
 
 const createWindow = () => {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     backgroundColor: '#111',
@@ -74,6 +76,57 @@ const createWindow = () => {
       path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`)
     );
   }
+
+  mainWindow.on('closed', () => { mainWindow = null; });
+
+  // Application menu
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'Export Patch…',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => mainWindow?.webContents.send('menu:export'),
+        },
+        {
+          label: 'Import Patch…',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => mainWindow?.webContents.send('menu:import'),
+        },
+        { type: 'separator' },
+        { role: 'quit' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+  ];
+
+  if (process.platform === 'darwin') {
+    template.unshift({ role: 'appMenu' });
+  }
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 };
 
 app.on('ready', createWindow);
