@@ -400,7 +400,7 @@ export function PixelCanvas({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const gl = canvas.getContext('webgl2');
+    const gl = canvas.getContext('webgl2', { preserveDrawingBuffer: true });
     if (!gl) return;
     glRef.current = gl;
     maskCacheRef.current.clear();
@@ -505,7 +505,8 @@ export function PixelCanvas({
   const sceneLayersRef = useRef(sceneLayers);
   const dmxEnabledRef = useRef(dmxEnabled);
   const dmxUniverseRef = useRef(dmxUniverse);
-  const lastOutputTimeRef = useRef(0);
+  const lastLedRgbRef = useRef<Uint8Array | null>(null);
+  const dmxSerialRef  = useRef<typeof import('../output/dmxSerial') | null>(null);
   stripsRef.current = strips;
   effectRef.current = activeEffect;
   effectParamsRef.current = effectParams;
@@ -521,27 +522,10 @@ export function PixelCanvas({
     const canvas = canvasRef.current;
     if (!gl || !canvas) return;
     const t0 = performance.now();
-    let dmxSerial: typeof import('../output/dmxSerial') | null = null;
-    import('../output/dmxSerial').then((m) => { dmxSerial = m; });
-
-    const sendOutput = (universes: Record<number, number[]>) => {
-      (window as any).electronAPI.sendFrame(universes);
-      if (dmxEnabledRef.current && dmxSerial?.isDmxConnected()) {
-        const data = universes[dmxUniverseRef.current];
-        if (data) dmxSerial.writeDmx(new Uint8Array(data));
-      }
-    };
 
     const loop = () => {
       const now = performance.now();
       const t = (now - t0) / 1000;
-      const outputInterval = 1000 / targetFpsRef.current;
-      const isOutputTick = (
-        outputRef.current &&
-        stripsRef.current.length > 0 &&
-        (window as any).electronAPI &&
-        now - lastOutputTimeRef.current >= outputInterval
-      );
 
       // Upload LED positions to GPU if strips changed
       if (ledPosDirtyRef.current && sceneFBORef.current && ledPosRef.current.total > 0) {
@@ -557,7 +541,7 @@ export function PixelCanvas({
         const W = canvas.width, H = canvas.height;
         const layers = sceneLayersRef.current.filter((l) => l.visible);
         const hasFixtureMask = layers.some((l) => l.mask.type === 'fixtures');
-        const doPerLedOutput = isOutputTick && hasFixtureMask && ledPosRef.current.total > 0;
+        const doPerLedOutput = hasFixtureMask && ledPosRef.current.total > 0;
         const ledLayerColors = new Map<string, Uint8Array>();
 
         // Upload audio once per frame for all reactive layers
@@ -726,30 +710,25 @@ export function PixelCanvas({
         if (texLoc) gl.uniform1i(texLoc, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
-        // 5. DMX output — fixture-aware when any layer uses a fixtures mask
-        if (isOutputTick) {
-          lastOutputTimeRef.current = now;
-          if (doPerLedOutput) {
-            const { ids, uvs, total } = ledPosRef.current;
-            const ledRgb = new Uint8Array(total * 3);
-            for (let ledIdx = 0; ledIdx < total; ledIdx++) {
-              const stripId = ids[ledIdx];
-              const u = uvs[ledIdx * 2], v = uvs[ledIdx * 2 + 1];
-              let r = 0, g = 0, b = 0;
-              for (const layer of layers) {
-                if (!maskAppliesPerLed(layer.mask, stripId, u, v)) continue;
-                const lc = ledLayerColors.get(layer.id);
-                if (!lc) continue;
-                [r, g, b] = blendLedColors(r, g, b, lc[ledIdx * 4], lc[ledIdx * 4 + 1], lc[ledIdx * 4 + 2], layer.blendMode, layer.opacity);
-              }
-              ledRgb[ledIdx * 3] = r; ledRgb[ledIdx * 3 + 1] = g; ledRgb[ledIdx * 3 + 2] = b;
+        // 5. Cache per-LED colors every frame so the output timer can send at its own pace
+        if (doPerLedOutput) {
+          const { ids, uvs, total } = ledPosRef.current;
+          const ledRgb = new Uint8Array(total * 3);
+          for (let ledIdx = 0; ledIdx < total; ledIdx++) {
+            const stripId = ids[ledIdx];
+            const u = uvs[ledIdx * 2], v = uvs[ledIdx * 2 + 1];
+            let r = 0, g = 0, b = 0;
+            for (const layer of layers) {
+              if (!maskAppliesPerLed(layer.mask, stripId, u, v)) continue;
+              const lc = ledLayerColors.get(layer.id);
+              if (!lc) continue;
+              [r, g, b] = blendLedColors(r, g, b, lc[ledIdx * 4], lc[ledIdx * 4 + 1], lc[ledIdx * 4 + 2], layer.blendMode, layer.opacity);
             }
-            sendOutput(buildUniversesFromLeds(stripsRef.current, ledRgb));
-          } else {
-            const px = new Uint8Array(W * H * 4);
-            gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
-            sendOutput(buildUniverses(stripsRef.current, px, W, H));
+            ledRgb[ledIdx * 3] = r; ledRgb[ledIdx * 3 + 1] = g; ledRgb[ledIdx * 3 + 2] = b;
           }
+          lastLedRgbRef.current = ledRgb;
+        } else {
+          lastLedRgbRef.current = null; // signal output timer to readPixels from canvas
         }
 
       } else {
@@ -820,14 +799,6 @@ export function PixelCanvas({
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
 
-      // ── Non-scene DMX output ──────────────────────────────────────────
-      if (!sceneModeRef.current && isOutputTick) {
-        lastOutputTimeRef.current = now;
-        const px = new Uint8Array(canvas.width * canvas.height * 4);
-        gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, px);
-        sendOutput(buildUniverses(stripsRef.current, px, canvas.width, canvas.height));
-      }
-
       const fps = fpsRef.current;
       fps.frames++;
       if (now - fps.last >= 1000) { onFps(fps.frames); fps.frames = 0; fps.last = now; }
@@ -838,6 +809,39 @@ export function PixelCanvas({
   }, [onFps]);
 
   useEffect(() => { const cancel = startLoop(); return cancel; }, [startLoop]);
+
+  // Load dmxSerial on mount
+  useEffect(() => {
+    import('../output/dmxSerial').then((m) => { dmxSerialRef.current = m; });
+  }, []);
+
+  // Output timer: decoupled from RAF for steady packet timing (±2ms vs ±8ms from RAF)
+  useEffect(() => {
+    let lastOut = 0;
+    const timer = setInterval(() => {
+      if (!outputRef.current || !stripsRef.current.length) return;
+      const now = performance.now();
+      if (now - lastOut < 1000 / targetFpsRef.current) return;
+      lastOut = now;
+      const gl = glRef.current, canvas = canvasRef.current;
+      if (!gl || !canvas || !(window as any).electronAPI) return;
+      let universes: Record<number, number[]>;
+      if (sceneModeRef.current && lastLedRgbRef.current) {
+        universes = buildUniversesFromLeds(stripsRef.current, lastLedRgbRef.current);
+      } else {
+        const px = new Uint8Array(canvas.width * canvas.height * 4);
+        gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        universes = buildUniverses(stripsRef.current, px, canvas.width, canvas.height);
+      }
+      (window as any).electronAPI.sendFrame(universes);
+      const ds = dmxSerialRef.current;
+      if (dmxEnabledRef.current && ds?.isDmxConnected()) {
+        const data = universes[dmxUniverseRef.current];
+        if (data) ds.writeDmx(new Uint8Array(data));
+      }
+    }, 4);
+    return () => clearInterval(timer);
+  }, []);
 
   // ── Drop from fixture list ────────────────────────────────────────────────
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {

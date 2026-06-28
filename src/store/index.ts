@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { Strip, OutputConfig } from '../fixtures/types';
-import { SceneLayer } from '../scene/types';
+import { Scene, SceneLayer } from '../scene/types';
 
 const DEFAULT_SHORTCUTS: Record<string, string> = {
   solid:   '1',
@@ -64,9 +64,13 @@ interface AppState {
   setAppMode: (mode: 'edit' | 'perform') => void;
   // Scene mode
   sceneMode: boolean;
-  sceneLayers: SceneLayer[];
-  activeLayerId: string | null;
+  scenes: Scene[];
+  activeSceneId: string | null;
   setSceneMode: (enabled: boolean) => void;
+  addScene: (scene: Scene) => void;
+  removeScene: (id: string) => void;
+  renameScene: (id: string, name: string) => void;
+  setActiveSceneId: (id: string | null) => void;
   addSceneLayer: (layer: SceneLayer) => void;
   updateSceneLayer: (id: string, updates: Partial<SceneLayer>) => void;
   removeSceneLayer: (id: string) => void;
@@ -102,8 +106,8 @@ export const useStore = create<AppState>()(
       audioDeviceId: '',
       appMode: 'edit' as 'edit' | 'perform',
       sceneMode: false,
-      sceneLayers: [] as SceneLayer[],
-      activeLayerId: null as string | null,
+      scenes: [] as Scene[],
+      activeSceneId: null as string | null,
 
       addStrip: (strip) =>
         set((s) => ({
@@ -217,25 +221,81 @@ export const useStore = create<AppState>()(
       setAudioDeviceId: (id) => set({ audioDeviceId: id }),
       setAppMode: (mode) => set({ appMode: mode }),
       setSceneMode: (enabled) => set({ sceneMode: enabled }),
-      addSceneLayer: (layer) => set((s) => ({ sceneLayers: [...s.sceneLayers, layer] })),
+
+      addScene: (scene) => set((s) => ({ scenes: [...s.scenes, scene], activeSceneId: scene.id })),
+      removeScene: (id) =>
+        set((s) => {
+          const remaining = s.scenes.filter((sc) => sc.id !== id);
+          const nextActive = s.activeSceneId === id
+            ? (remaining[remaining.length - 1]?.id ?? null)
+            : s.activeSceneId;
+          return { scenes: remaining, activeSceneId: nextActive };
+        }),
+      renameScene: (id, name) =>
+        set((s) => ({ scenes: s.scenes.map((sc) => sc.id === id ? { ...sc, name } : sc) })),
+      setActiveSceneId: (id) => set({ activeSceneId: id }),
+
+      addSceneLayer: (layer) =>
+        set((s) => {
+          if (!s.activeSceneId) return s;
+          return {
+            scenes: s.scenes.map((sc) =>
+              sc.id === s.activeSceneId
+                ? { ...sc, layers: [...sc.layers, layer], activeLayerId: layer.id }
+                : sc
+            ),
+          };
+        }),
       updateSceneLayer: (id, updates) =>
-        set((s) => ({ sceneLayers: s.sceneLayers.map((l) => (l.id === id ? { ...l, ...updates } : l)) })),
+        set((s) => {
+          if (!s.activeSceneId) return s;
+          return {
+            scenes: s.scenes.map((sc) =>
+              sc.id === s.activeSceneId
+                ? { ...sc, layers: sc.layers.map((l) => l.id === id ? { ...l, ...updates } : l) }
+                : sc
+            ),
+          };
+        }),
       removeSceneLayer: (id) =>
-        set((s) => ({
-          sceneLayers: s.sceneLayers.filter((l) => l.id !== id),
-          activeLayerId: s.activeLayerId === id ? null : s.activeLayerId,
-        })),
+        set((s) => {
+          if (!s.activeSceneId) return s;
+          return {
+            scenes: s.scenes.map((sc) => {
+              if (sc.id !== s.activeSceneId) return sc;
+              return {
+                ...sc,
+                layers: sc.layers.filter((l) => l.id !== id),
+                activeLayerId: sc.activeLayerId === id ? null : sc.activeLayerId,
+              };
+            }),
+          };
+        }),
       moveSceneLayer: (id, dir) =>
         set((s) => {
-          const idx = s.sceneLayers.findIndex((l) => l.id === id);
-          if (idx < 0) return s;
-          const newIdx = dir === 'up' ? idx + 1 : idx - 1;
-          if (newIdx < 0 || newIdx >= s.sceneLayers.length) return s;
-          const arr = [...s.sceneLayers];
-          [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
-          return { sceneLayers: arr };
+          if (!s.activeSceneId) return s;
+          return {
+            scenes: s.scenes.map((sc) => {
+              if (sc.id !== s.activeSceneId) return sc;
+              const idx = sc.layers.findIndex((l) => l.id === id);
+              if (idx < 0) return sc;
+              const newIdx = dir === 'up' ? idx + 1 : idx - 1;
+              if (newIdx < 0 || newIdx >= sc.layers.length) return sc;
+              const arr = [...sc.layers];
+              [arr[idx], arr[newIdx]] = [arr[newIdx], arr[idx]];
+              return { ...sc, layers: arr };
+            }),
+          };
         }),
-      setActiveLayerId: (id) => set({ activeLayerId: id }),
+      setActiveLayerId: (id) =>
+        set((s) => {
+          if (!s.activeSceneId) return s;
+          return {
+            scenes: s.scenes.map((sc) =>
+              sc.id === s.activeSceneId ? { ...sc, activeLayerId: id } : sc
+            ),
+          };
+        }),
       loadStrips: (strips) =>
         set((s) => ({
           past: pushPast(s.past, s.strips),
@@ -266,7 +326,8 @@ export const useStore = create<AppState>()(
         audioDeviceId: state.audioDeviceId,
         appMode: state.appMode,
         sceneMode: state.sceneMode,
-        sceneLayers: state.sceneLayers,
+        scenes: state.scenes,
+        activeSceneId: state.activeSceneId,
         // past/future not persisted — history doesn't survive restarts
       }),
     }

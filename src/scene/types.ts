@@ -16,3 +16,10 @@ export interface SceneLayer {
   blendMode: BlendMode;
   visible: boolean;
 }
+
+export interface Scene {
+  id: string;
+  name: string;
+  layers: SceneLayer[];
+  activeLayerId: string | null;
+}

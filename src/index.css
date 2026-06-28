@@ -1026,6 +1026,63 @@ kbd.shortcut-badge.capturing {
 /* ── Scene Panel ────────────────────────────────────────────────────────────── */
 .scene-panel { width: 210px; flex-shrink: 0; }
 
+/* Scene selector */
+.scene-selector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.scene-selector-scroll {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.scene-selector-scroll::-webkit-scrollbar { display: none; }
+.scene-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--bg0);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+}
+.scene-chip:hover { border-color: var(--accent); color: var(--text); }
+.scene-chip.active { background: var(--bg2); border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.scene-chip-del {
+  background: none;
+  border: none;
+  padding: 0 0 0 4px;
+  font-size: 10px;
+  color: var(--text-dim);
+  cursor: pointer;
+  line-height: 1;
+}
+.scene-chip-del:hover { color: #f66; }
+.scene-rename-input {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  width: 80px;
+  outline: none;
+  padding: 0;
+}
+.scene-add-btn { flex-shrink: 0; }
+
 .scene-layer-list {
   flex: 1;
   overflow-y: auto;

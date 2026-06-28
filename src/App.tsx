@@ -30,7 +30,10 @@ export default function App() {
   const undo             = useStore((s) => s.undo);
   const redo             = useStore((s) => s.redo);
   const sceneMode        = useStore((s) => s.sceneMode);
-  const sceneLayers      = useStore((s) => s.sceneLayers);
+  const scenes           = useStore((s) => s.scenes);
+  const activeSceneId    = useStore((s) => s.activeSceneId);
+  const activeScene      = scenes.find((sc) => sc.id === activeSceneId) ?? null;
+  const sceneLayers      = activeScene?.layers ?? [];
   const updateSceneLayer = useStore((s) => s.updateSceneLayer);
   const canvasWidth      = useStore((s) => s.canvasWidth);
   const canvasHeight     = useStore((s) => s.canvasHeight);
