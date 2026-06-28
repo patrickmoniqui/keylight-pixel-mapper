@@ -1,36 +1,101 @@
 import { app, BrowserWindow, ipcMain, Menu } from 'electron';
 import path from 'node:path';
 import dgram from 'node:dgram';
+import os from 'node:os';
 import started from 'electron-squirrel-startup';
-import { buildArtDmx } from './output/artnet';
+import { buildArtDmx, buildArtPoll, parseArtPollReply, ArtNode } from './output/artnet';
 import { buildSacnPacket, sacnMulticastAddress } from './output/sacn';
 
 if (started) app.quit();
 
 let mainWindow: BrowserWindow | null = null;
+let pendingSerialCallback: ((portId: string) => void) | null = null;
 
 interface OutputConfig {
   enabled: boolean;
   protocol: 'artnet' | 'sacn' | 'both';
   broadcastAddress: string;
+  artnetMode: 'broadcast' | 'unicast';
+  dmxEnabled: boolean;
+  dmxUniverse: number;
 }
 
 let outputConfig: OutputConfig = {
   enabled: false,
   protocol: 'both',
   broadcastAddress: '255.255.255.255',
+  artnetMode: 'broadcast',
+  dmxEnabled: false,
+  dmxUniverse: 0,
 };
 
+// universe → IP (fast lookup for unicast output)
+const universeToIp = new Map<number, string>();
+// IP → node info (for UI display)
+const nodeInfoMap = new Map<string, ArtNode>();
+
+let artPollTimer: ReturnType<typeof setInterval> | null = null;
+
+// Returns broadcast addresses for every non-loopback IPv4 interface,
+// plus the global broadcast as a fallback.
+function subnetBroadcasts(): string[] {
+  const addrs = new Set<string>(['255.255.255.255']);
+  for (const iface of Object.values(os.networkInterfaces())) {
+    for (const a of iface ?? []) {
+      if (a.family !== 'IPv4' || a.internal) continue;
+      const ip   = a.address.split('.').map(Number);
+      const mask = a.netmask.split('.').map(Number);
+      const bc   = ip.map((b, i) => b | (~mask[i] & 0xff)).join('.');
+      addrs.add(bc);
+    }
+  }
+  return [...addrs];
+}
+
 const udp = dgram.createSocket({ type: 'udp4', reuseAddr: true });
-udp.bind(() => {
+
+udp.on('error', (err) => console.error('[ArtNet] UDP error:', err.message));
+
+udp.bind(6454, () => {
   udp.setBroadcast(true);
+
+  udp.on('message', (msg, rinfo) => {
+    const node = parseArtPollReply(msg, rinfo.address);
+    if (!node) return;
+    nodeInfoMap.set(node.ip, node);
+    for (const u of node.universes) universeToIp.set(u, node.ip);
+    mainWindow?.webContents.send('nodes:discovered', Array.from(nodeInfoMap.values()));
+  });
 });
+
+function sendArtPoll() {
+  const packet = buildArtPoll();
+  for (const addr of subnetBroadcasts()) {
+    udp.send(packet, 6454, addr);
+  }
+}
+
+function startArtPoll() {
+  if (artPollTimer) return;
+  sendArtPoll();
+  artPollTimer = setInterval(sendArtPoll, 3000);
+}
+
+function stopArtPoll() {
+  if (artPollTimer) { clearInterval(artPollTimer); artPollTimer = null; }
+  universeToIp.clear();
+  nodeInfoMap.clear();
+  mainWindow?.webContents.send('nodes:discovered', []);
+}
 
 function sendArtNet(universes: Record<number, number[]>) {
   for (const [uStr, data] of Object.entries(universes)) {
     const universe = parseInt(uStr, 10);
     const packet = buildArtDmx(universe, new Uint8Array(data));
-    udp.send(packet, 6454, outputConfig.broadcastAddress);
+    const dest = outputConfig.artnetMode === 'unicast' && universeToIp.has(universe)
+      ? universeToIp.get(universe)!
+      : outputConfig.broadcastAddress;
+    udp.send(packet, 6454, dest);
   }
 }
 
@@ -51,10 +116,20 @@ ipcMain.on('output:frame', (_event, universes: Record<number, number[]>) => {
   if (outputConfig.protocol === 'sacn' || outputConfig.protocol === 'both') {
     sendSacn(universes);
   }
+  // USB DMX (dmxEnabled) is handled in the renderer via WebSerial — no main-process work needed
+});
+
+ipcMain.on('serial:select', (_e, portId: string) => {
+  pendingSerialCallback?.(portId);
+  pendingSerialCallback = null;
 });
 
 ipcMain.on('output:config', (_event, config: OutputConfig) => {
   outputConfig = config;
+  const wantsUnicast =
+    (config.protocol === 'artnet' || config.protocol === 'both') &&
+    config.artnetMode === 'unicast';
+  if (wantsUnicast) startArtPoll(); else stopArtPoll();
 });
 
 const createWindow = () => {
@@ -78,6 +153,30 @@ const createWindow = () => {
   }
 
   mainWindow.on('closed', () => { mainWindow = null; });
+
+  // Web Serial API — Electron doesn't show a picker UI automatically;
+  // we forward the port list to the renderer and await its selection.
+  mainWindow.webContents.session.setPermissionCheckHandler((_wc, permission) =>
+    permission === 'serial'
+  );
+  mainWindow.webContents.session.setDevicePermissionHandler((details) =>
+    details.deviceType === 'serial'
+  );
+  mainWindow.webContents.session.on('select-serial-port', (event, portList, _wc, callback) => {
+    event.preventDefault();
+    if (portList.length === 0) { callback(''); return; }
+    // Auto-select when only one port matches (or only one FTDI device present)
+    const ftdiPorts = portList.filter((p) => (p as any).usbVendorId === '0403' || (p as any).vendorId === '0403');
+    const autoPort = ftdiPorts.length === 1 ? ftdiPorts[0]
+      : portList.length === 1 ? portList[0]
+      : null;
+    if (autoPort) { callback(autoPort.portId); return; }
+    // Multiple candidates — send list to renderer for manual selection
+    pendingSerialCallback = callback;
+    mainWindow?.webContents.send('serial:ports',
+      portList.map((p) => ({ portId: p.portId, portName: p.portName }))
+    );
+  });
 
   // Application menu
   const template: Electron.MenuItemConstructorOptions[] = [
@@ -108,6 +207,16 @@ const createWindow = () => {
         { role: 'copy' },
         { role: 'paste' },
         { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'Fixtures',
+      submenu: [
+        {
+          label: 'Fixture Library…',
+          accelerator: 'CmdOrCtrl+L',
+          click: () => mainWindow?.webContents.send('menu:fixtures'),
+        },
       ],
     },
     {

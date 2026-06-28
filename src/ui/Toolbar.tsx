@@ -1,7 +1,9 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import type { ArtNode } from '../fixtures/types';
 import { useStore } from '../store';
 import { EFFECTS } from '../canvas/shaders';
 import { ShortcutsModal } from './ShortcutsModal';
+import { FixtureLibrary } from './FixtureLibrary';
 import { Strip } from '../fixtures/types';
 
 interface ToolbarProps {
@@ -44,7 +46,15 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
   const [micDevices, setMicDevices]       = useState<MediaDeviceInfo[]>([]);
   const [showSettings, setShowSettings]   = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showLibrary, setShowLibrary]     = useState(false);
   const [ipInput, setIpInput]             = useState(output.broadcastAddress);
+  const [discoveredNodes, setDiscoveredNodes] = useState<ArtNode[]>([]);
+  const [dmxConnected, setDmxConnected]   = useState(false);
+  const [dmxPortLabel, setDmxPortLabel]   = useState('');
+  const [dmxError, setDmxError]           = useState('');
+  const [dmxPicking, setDmxPicking]       = useState(false);
+  const [serialPortList, setSerialPortList] = useState<{ portId: string; portName: string }[]>([]);
+  const [selectedPortId, setSelectedPortId] = useState('');
   const importRef                       = useRef<HTMLInputElement>(null);
   const settingsRef                     = useRef<HTMLDivElement>(null);
 
@@ -85,6 +95,51 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Listen for Fixtures menu
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onMenuFixtures) return;
+    return api.onMenuFixtures(() => setShowLibrary(true));
+  }, []);
+
+  // Discovered Art-Net nodes from main process
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onNodesDiscovered) return;
+    return api.onNodesDiscovered((nodes: ArtNode[]) => setDiscoveredNodes(nodes));
+  }, []);
+
+  // Subscribe to WebSerial DMX connection status
+  useEffect(() => {
+    import('../output/dmxSerial').then(({ onDmxStatus }) => {
+      return onDmxStatus((connected, label) => {
+        setDmxConnected(connected);
+        setDmxPortLabel(label);
+        if (!connected) { setDmxError(''); setDmxPicking(false); }
+      });
+    });
+  }, []);
+
+  // Auto-connect when USB DMX is enabled (uses previously granted port if available)
+  useEffect(() => {
+    if (!output.dmxEnabled) return;
+    import('../output/dmxSerial').then(({ tryAutoConnect }) => {
+      tryAutoConnect(output.dmxType).catch(() => {});
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [output.dmxEnabled]);
+
+  // Receive port list from main process (triggered by requestPort() call)
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onSerialPorts) return;
+    return api.onSerialPorts((ports: { portId: string; portName: string }[]) => {
+      setSerialPortList(ports);
+      setSelectedPortId(ports[0]?.portId ?? '');
+      setDmxPicking(true);
+    });
+  }, []);
+
   // ? key opens shortcuts modal
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -111,6 +166,22 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
     setOutput({ broadcastAddress: ipInput });
     (window as any).electronAPI?.setOutputConfig({ ...output, broadcastAddress: ipInput });
   };
+
+  const setArtnetMode = useCallback((mode: 'broadcast' | 'unicast') => {
+    setOutput({ artnetMode: mode });
+    (window as any).electronAPI?.setOutputConfig({ ...output, artnetMode: mode });
+  }, [output, setOutput]);
+
+  const applyDmxConfig = useCallback((patch: Partial<typeof output>) => {
+    const next = { ...output, ...patch };
+    setOutput(patch);
+    setDmxError('');
+    (window as any).electronAPI?.setOutputConfig(next);
+    // Disconnect when disabling so re-enable triggers a fresh auto-connect
+    if ('dmxEnabled' in patch && !patch.dmxEnabled) {
+      import('../output/dmxSerial').then(({ disconnectDmx }) => disconnectDmx());
+    }
+  }, [output, setOutput]);
 
   // ── Export patch ─────────────────────────────────────────────────────────
   const exportPatch = () => {
@@ -191,20 +262,47 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
                   </div>
                 </div>
 
-                {(output.protocol === 'artnet' || output.protocol === 'both') && (
+                {(output.protocol === 'artnet' || output.protocol === 'both') && (<>
                   <div className="settings-row">
-                    <span className="settings-row-label">Art-Net IP</span>
-                    <input
-                      className="settings-input"
-                      value={ipInput}
-                      onChange={(e) => setIpInput(e.target.value)}
-                      onBlur={commitIp}
-                      onKeyDown={(e) => { if (e.key === 'Enter') commitIp(); }}
-                      placeholder="255.255.255.255"
-                      spellCheck={false}
-                    />
+                    <span className="settings-row-label">Art-Net Mode</span>
+                    <div className="proto-btns">
+                      <button className={output.artnetMode === 'broadcast' ? 'active' : ''}
+                        onClick={() => setArtnetMode('broadcast')}>Broadcast</button>
+                      <button className={output.artnetMode === 'unicast' ? 'active' : ''}
+                        onClick={() => setArtnetMode('unicast')}>Unicast</button>
+                    </div>
                   </div>
-                )}
+
+                  {output.artnetMode === 'broadcast' && (
+                    <div className="settings-row">
+                      <span className="settings-row-label">Art-Net IP</span>
+                      <input
+                        className="settings-input"
+                        value={ipInput}
+                        onChange={(e) => setIpInput(e.target.value)}
+                        onBlur={commitIp}
+                        onKeyDown={(e) => { if (e.key === 'Enter') commitIp(); }}
+                        placeholder="255.255.255.255"
+                        spellCheck={false}
+                      />
+                    </div>
+                  )}
+
+                  {output.artnetMode === 'unicast' && (
+                    <div className="nodes-list">
+                      {discoveredNodes.length === 0
+                        ? <div className="nodes-empty">Searching for nodes…</div>
+                        : discoveredNodes.map((n) => (
+                            <div key={n.ip} className="node-item">
+                              <span className="node-name">{n.name}</span>
+                              <span className="node-ip">{n.ip}</span>
+                              <span className="node-universes">U{n.universes.join(', U')}</span>
+                            </div>
+                          ))
+                      }
+                    </div>
+                  )}
+                </>)}
 
                 <div className="settings-row">
                   <span className="settings-row-label">Frame Rate</span>
@@ -240,6 +338,105 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
                   </div>
                 </div>
               )}
+
+              <div className="settings-group">
+                <div className="settings-group-label">USB DMX</div>
+
+                <div className="settings-row">
+                  <span className="settings-row-label">Enable</span>
+                  <button
+                    className={output.dmxEnabled ? 'active' : ''}
+                    onClick={() => applyDmxConfig({ dmxEnabled: !output.dmxEnabled })}
+                  >{output.dmxEnabled ? 'On' : 'Off'}</button>
+                </div>
+
+                {output.dmxEnabled && (<>
+                  <div className="settings-row">
+                    <span className="settings-row-label">Dongle type</span>
+                    <div className="proto-btns">
+                      <button
+                        className={output.dmxType === 'open' ? 'active' : ''}
+                        onClick={() => applyDmxConfig({ dmxType: 'open' })}
+                      >Open DMX</button>
+                      <button
+                        className={output.dmxType === 'pro' ? 'active' : ''}
+                        onClick={() => applyDmxConfig({ dmxType: 'pro' })}
+                      >Pro</button>
+                    </div>
+                  </div>
+
+                  <div className="settings-row">
+                    <span className="settings-row-label">Universe</span>
+                    <select
+                      className="settings-select"
+                      value={output.dmxUniverse}
+                      onChange={(e) => applyDmxConfig({ dmxUniverse: Number(e.target.value) })}
+                    >
+                      {Array.from({ length: 16 }, (_, i) => (
+                        <option key={i} value={i}>Universe {i}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {!dmxConnected && !dmxPicking && (
+                    <div className="settings-row">
+                      <span className="settings-row-label">Port</span>
+                      <button onClick={() => {
+                        setDmxError('');
+                        // requestPort() triggers select-serial-port in main → auto-select FTDI or show picker
+                        navigator.serial.requestPort({ filters: [{ usbVendorId: 0x0403 }] }).then(async (p) => {
+                          const { openDmxPort } = await import('../output/dmxSerial');
+                          await openDmxPort(p, output.dmxType);
+                          setDmxPicking(false);
+                        }).catch((err: unknown) => {
+                          setDmxPicking(false);
+                          if (err instanceof Error && err.name !== 'NotFoundError') setDmxError(err.message);
+                        });
+                      }}>Connect…</button>
+                    </div>
+                  )}
+
+                  {dmxPicking && (
+                    <div className="serial-picker">
+                      <div className="serial-picker-label">Select port:</div>
+                      {serialPortList.map((p) => (
+                        <button
+                          key={p.portId}
+                          className={`serial-port-btn${selectedPortId === p.portId ? ' active' : ''}`}
+                          onClick={() => setSelectedPortId(p.portId)}
+                        >{p.portName}</button>
+                      ))}
+                      <div className="serial-picker-actions">
+                        <button onClick={() => {
+                          setDmxPicking(false);
+                          (window as any).electronAPI?.selectSerialPort('');
+                        }}>Cancel</button>
+                        <button
+                          className="active"
+                          disabled={!selectedPortId}
+                          onClick={() => (window as any).electronAPI?.selectSerialPort(selectedPortId)}
+                        >Connect</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {dmxConnected && (
+                    <div className="settings-row">
+                      <span className="settings-row-label">Port</span>
+                      <button className="active" onClick={() => {
+                        import('../output/dmxSerial').then(({ disconnectDmx }) => disconnectDmx());
+                      }}>● {dmxPortLabel || 'Connected'}</button>
+                    </div>
+                  )}
+
+                  {dmxError && <div className="dmx-error">{dmxError}</div>}
+                  <div className="settings-note">
+                    {output.dmxType === 'open'
+                      ? 'Open DMX USB · 250 kbaud · BREAK via setSignals'
+                      : 'DMX USB Pro · 57600 baud · framed packets'}
+                  </div>
+                </>)}
+              </div>
 
               <div className="settings-group">
                 <div className="settings-group-label">Canvas</div>
@@ -324,6 +521,7 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
       </div>
 
       {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
+      {showLibrary && <FixtureLibrary onClose={() => setShowLibrary(false)} />}
     </div>
   );
 }

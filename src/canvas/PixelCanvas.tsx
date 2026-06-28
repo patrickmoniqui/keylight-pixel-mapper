@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { Strip, applyChannelOrder } from '../fixtures/types';
-import { VERTEX_SHADER, EFFECTS, COMPOSITE_FRAG, BLIT_FRAG } from './shaders';
+import { VERTEX_SHADER, EFFECTS, COMPOSITE_FRAG, BLIT_FRAG, LED_SAMPLE_FRAG } from './shaders';
 import { SceneLayer, LayerMask } from '../scene/types';
 
 function hexToRgb(hex: string): [number, number, number] {
@@ -29,21 +29,19 @@ function rasterizeMask(mask: LayerMask, strips: Strip[], W: number, H: number): 
   } else if (mask.type === 'fixtures') {
     const ids = new Set(mask.fixtureIds ?? []);
     ctx.fillStyle = '#fff';
-    ctx.strokeStyle = '#fff';
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = 20;
     for (const strip of strips) {
       if (!ids.has(strip.id)) continue;
       const rad = (strip.angle * Math.PI) / 180;
       const cos = Math.cos(rad), sin = Math.sin(rad);
-      ctx.beginPath();
+      // Dot radius = half the pixel spacing, clamped so adjacent LEDs don't bleed into neighbours
+      const dotR = Math.max(2, Math.min(8, (strip.spacing * W) * 0.45));
       for (let i = 0; i < strip.pixelCount; i++) {
         const px = (strip.x + cos * i * strip.spacing) * W;
         const py = (strip.y + sin * i * strip.spacing) * H;
-        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        ctx.beginPath();
+        ctx.arc(px, py, dotR, 0, Math.PI * 2);
+        ctx.fill();
       }
-      ctx.stroke();
     }
   }
 
@@ -77,6 +75,8 @@ interface Props {
   canvasWidth: number;
   canvasHeight: number;
   readOnly?: boolean;
+  dmxEnabled?: boolean;
+  dmxUniverse?: number;
 }
 
 // ─── WebGL helpers ────────────────────────────────────────────────────────────
@@ -132,6 +132,67 @@ function buildUniverses(
         if (channel >= 512) { channel = 0; universe++; if (!universes[universe]) universes[universe] = new Array(512).fill(0); }
         universes[universe][channel++] = byte;
       }
+    }
+  }
+  return universes;
+}
+
+// ─── Per-LED fixture-aware output helpers ─────────────────────────────────────
+
+function maskAppliesPerLed(mask: LayerMask, stripId: string, u: number, v: number): boolean {
+  if (mask.type === 'full') return true;
+  if (mask.type === 'fixtures') return (mask.fixtureIds ?? []).includes(stripId);
+  if (mask.type === 'polygon') {
+    const pts = mask.points ?? [];
+    if (pts.length < 3) return false;
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i].x, yi = pts[i].y, xj = pts[j].x, yj = pts[j].y;
+      if ((yi > v) !== (yj > v) && u < (xj - xi) * (v - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  return false;
+}
+
+function blendLedColors(
+  br: number, bg: number, bb: number,
+  lr: number, lg: number, lb: number,
+  blendMode: string, opacity: number,
+): [number, number, number] {
+  let er: number, eg: number, eb: number;
+  if (blendMode === 'add') {
+    er = Math.min(br + lr, 255); eg = Math.min(bg + lg, 255); eb = Math.min(bb + lb, 255);
+  } else if (blendMode === 'multiply') {
+    er = Math.round(br * lr / 255); eg = Math.round(bg * lg / 255); eb = Math.round(bb * lb / 255);
+  } else if (blendMode === 'screen') {
+    er = Math.round(255 - (255 - br) * (255 - lr) / 255);
+    eg = Math.round(255 - (255 - bg) * (255 - lg) / 255);
+    eb = Math.round(255 - (255 - bb) * (255 - lb) / 255);
+  } else {
+    er = lr; eg = lg; eb = lb;
+  }
+  return [
+    Math.round(br + (er - br) * opacity),
+    Math.round(bg + (eg - bg) * opacity),
+    Math.round(bb + (eb - bb) * opacity),
+  ];
+}
+
+function buildUniversesFromLeds(strips: Strip[], ledRgb: Uint8Array) {
+  const universes: Record<number, number[]> = {};
+  let ledIdx = 0;
+  for (const strip of strips) {
+    let channel = strip.startChannel;
+    let universe = strip.universe;
+    for (let i = 0; i < strip.pixelCount; i++) {
+      const bytes = applyChannelOrder(ledRgb[ledIdx * 3], ledRgb[ledIdx * 3 + 1], ledRgb[ledIdx * 3 + 2], strip.channelOrder);
+      if (!universes[universe]) universes[universe] = new Array(512).fill(0);
+      for (const byte of bytes) {
+        if (channel >= 512) { channel = 0; universe++; if (!universes[universe]) universes[universe] = new Array(512).fill(0); }
+        universes[universe][channel++] = byte;
+      }
+      ledIdx++;
     }
   }
   return universes;
@@ -255,6 +316,8 @@ export function PixelCanvas({
   canvasWidth,
   canvasHeight,
   readOnly = false,
+  dmxEnabled = false,
+  dmxUniverse = 0,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -283,8 +346,14 @@ export function PixelCanvas({
     accumTexB: WebGLTexture; accumFBO_B: WebGLFramebuffer;
     maskTex: WebGLTexture;
     compositeProgram: WebGLProgram; blitProgram: WebGLProgram;
+    ledSampleProgram: WebGLProgram;
+    ledPosTex: WebGLTexture;
+    ledSampleFBO: WebGLFramebuffer;
+    ledSampleTex: WebGLTexture;
   } | null>(null);
   const maskCacheRef = useRef(new Map<string, { data: Uint8Array; hash: string }>());
+  const ledPosRef = useRef<{ uvs: Float32Array; ids: string[]; total: number }>({ uvs: new Float32Array(0), ids: [], total: 0 });
+  const ledPosDirtyRef = useRef(true);
 
   // Polygon drawing state
   const [previewPoint, setPreviewPoint] = useState<{ x: number; y: number } | null>(null);
@@ -370,6 +439,31 @@ export function PixelCanvas({
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     try {
+      const MAX_LEDS = 8192;
+      const ledPosTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, ledPosTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      // Placeholder; filled each frame from ledPosRef when dirty
+      (gl as WebGL2RenderingContext).texImage2D(gl.TEXTURE_2D, 0, (gl as any).RG32F, 1, 1, 0, gl.RG, gl.FLOAT, new Float32Array([0, 0]));
+
+      const ledSampleTex = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, ledSampleTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, MAX_LEDS, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+      const ledSampleFBO = gl.createFramebuffer()!;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, ledSampleFBO);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ledSampleTex, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+      ledPosDirtyRef.current = true;
+
       sceneFBORef.current = {
         layerFBO: mkFBO(layerTex), layerTex,
         accumTexA, accumFBO_A: mkFBO(accumTexA),
@@ -377,9 +471,29 @@ export function PixelCanvas({
         maskTex,
         compositeProgram: createProgram(gl, VERTEX_SHADER, COMPOSITE_FRAG),
         blitProgram: createProgram(gl, VERTEX_SHADER, BLIT_FRAG),
+        ledSampleProgram: createProgram(gl, VERTEX_SHADER, LED_SAMPLE_FRAG),
+        ledPosTex,
+        ledSampleFBO,
+        ledSampleTex,
       };
     } catch (e) { console.error('Scene shaders:', e); }
   }, [canvasWidth, canvasHeight]);
+
+  // Rebuild LED UV positions whenever strips change
+  useEffect(() => {
+    const uvs: number[] = [];
+    const ids: string[] = [];
+    for (const strip of strips) {
+      const rad = (strip.angle * Math.PI) / 180;
+      const cos = Math.cos(rad), sin = Math.sin(rad);
+      for (let i = 0; i < strip.pixelCount; i++) {
+        uvs.push(strip.x + cos * i * strip.spacing, strip.y + sin * i * strip.spacing);
+        ids.push(strip.id);
+      }
+    }
+    ledPosRef.current = { uvs: new Float32Array(uvs), ids, total: ids.length };
+    ledPosDirtyRef.current = true;
+  }, [strips]);
 
   // ── Render loop ──────────────────────────────────────────────────────────
   const stripsRef = useRef(strips);
@@ -389,6 +503,8 @@ export function PixelCanvas({
   const targetFpsRef = useRef(targetFps);
   const sceneModeRef = useRef(sceneMode);
   const sceneLayersRef = useRef(sceneLayers);
+  const dmxEnabledRef = useRef(dmxEnabled);
+  const dmxUniverseRef = useRef(dmxUniverse);
   const lastOutputTimeRef = useRef(0);
   stripsRef.current = strips;
   effectRef.current = activeEffect;
@@ -397,20 +513,52 @@ export function PixelCanvas({
   targetFpsRef.current = targetFps;
   sceneModeRef.current = sceneMode;
   sceneLayersRef.current = sceneLayers;
+  dmxEnabledRef.current = dmxEnabled;
+  dmxUniverseRef.current = dmxUniverse;
 
   const startLoop = useCallback(() => {
     const gl = glRef.current;
     const canvas = canvasRef.current;
     if (!gl || !canvas) return;
     const t0 = performance.now();
+    let dmxSerial: typeof import('../output/dmxSerial') | null = null;
+    import('../output/dmxSerial').then((m) => { dmxSerial = m; });
+
+    const sendOutput = (universes: Record<number, number[]>) => {
+      (window as any).electronAPI.sendFrame(universes);
+      if (dmxEnabledRef.current && dmxSerial?.isDmxConnected()) {
+        const data = universes[dmxUniverseRef.current];
+        if (data) dmxSerial.writeDmx(new Uint8Array(data));
+      }
+    };
+
     const loop = () => {
-      const t = (performance.now() - t0) / 1000;
+      const now = performance.now();
+      const t = (now - t0) / 1000;
+      const outputInterval = 1000 / targetFpsRef.current;
+      const isOutputTick = (
+        outputRef.current &&
+        stripsRef.current.length > 0 &&
+        (window as any).electronAPI &&
+        now - lastOutputTimeRef.current >= outputInterval
+      );
+
+      // Upload LED positions to GPU if strips changed
+      if (ledPosDirtyRef.current && sceneFBORef.current && ledPosRef.current.total > 0) {
+        const { uvs, total } = ledPosRef.current;
+        gl.bindTexture(gl.TEXTURE_2D, sceneFBORef.current.ledPosTex);
+        (gl as WebGL2RenderingContext).texImage2D(gl.TEXTURE_2D, 0, (gl as any).RG32F, total, 1, 0, gl.RG, gl.FLOAT, uvs);
+        ledPosDirtyRef.current = false;
+      }
 
       // ── Scene rendering ────────────────────────────────────────────────
       if (sceneModeRef.current && sceneFBORef.current) {
         const scene = sceneFBORef.current;
         const W = canvas.width, H = canvas.height;
         const layers = sceneLayersRef.current.filter((l) => l.visible);
+        const hasFixtureMask = layers.some((l) => l.mask.type === 'fixtures');
+        const doPerLedOutput = isOutputTick && hasFixtureMask && ledPosRef.current.total > 0;
+        const ledLayerColors = new Map<string, Uint8Array>();
 
         // Upload audio once per frame for all reactive layers
         let hasAudio = false;
@@ -495,6 +643,29 @@ export function PixelCanvas({
           }
           gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
 
+          // 1b. If output tick with fixture masks: sample effect at each LED position
+          if (doPerLedOutput) {
+            const { total } = ledPosRef.current;
+            gl.bindFramebuffer(gl.FRAMEBUFFER, scene.ledSampleFBO);
+            gl.viewport(0, 0, total, 1);
+            gl.useProgram(scene.ledSampleProgram);
+            const spLoc = gl.getAttribLocation(scene.ledSampleProgram, 'a_position');
+            gl.enableVertexAttribArray(spLoc);
+            gl.vertexAttribPointer(spLoc, 2, gl.FLOAT, false, 0, 0);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, scene.layerTex);
+            const etLoc = gl.getUniformLocation(scene.ledSampleProgram, 'u_effectTex');
+            if (etLoc) gl.uniform1i(etLoc, 0);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, scene.ledPosTex);
+            const ptLoc = gl.getUniformLocation(scene.ledSampleProgram, 'u_ledPosTex');
+            if (ptLoc) gl.uniform1i(ptLoc, 1);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            const buf = new Uint8Array(total * 4);
+            gl.readPixels(0, 0, total, 1, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+            ledLayerColors.set(layer.id, buf);
+          }
+
           // 2. Compute/upload mask texture
           const maskHash = JSON.stringify(layer.mask);
           const cached = maskCacheRef.current.get(layer.id);
@@ -554,6 +725,32 @@ export function PixelCanvas({
         const texLoc = gl.getUniformLocation(scene.blitProgram, 'u_tex');
         if (texLoc) gl.uniform1i(texLoc, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+        // 5. DMX output — fixture-aware when any layer uses a fixtures mask
+        if (isOutputTick) {
+          lastOutputTimeRef.current = now;
+          if (doPerLedOutput) {
+            const { ids, uvs, total } = ledPosRef.current;
+            const ledRgb = new Uint8Array(total * 3);
+            for (let ledIdx = 0; ledIdx < total; ledIdx++) {
+              const stripId = ids[ledIdx];
+              const u = uvs[ledIdx * 2], v = uvs[ledIdx * 2 + 1];
+              let r = 0, g = 0, b = 0;
+              for (const layer of layers) {
+                if (!maskAppliesPerLed(layer.mask, stripId, u, v)) continue;
+                const lc = ledLayerColors.get(layer.id);
+                if (!lc) continue;
+                [r, g, b] = blendLedColors(r, g, b, lc[ledIdx * 4], lc[ledIdx * 4 + 1], lc[ledIdx * 4 + 2], layer.blendMode, layer.opacity);
+              }
+              ledRgb[ledIdx * 3] = r; ledRgb[ledIdx * 3 + 1] = g; ledRgb[ledIdx * 3 + 2] = b;
+            }
+            sendOutput(buildUniversesFromLeds(stripsRef.current, ledRgb));
+          } else {
+            const px = new Uint8Array(W * H * 4);
+            gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, px);
+            sendOutput(buildUniverses(stripsRef.current, px, W, H));
+          }
+        }
 
       } else {
         // ── Normal single-effect rendering ───────────────────────────────
@@ -623,21 +820,14 @@ export function PixelCanvas({
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
 
-      // ── Shared: DMX output + FPS counter ─────────────────────────────
-      const now = performance.now();
-      const outputInterval = 1000 / targetFpsRef.current;
-      if (
-        outputRef.current &&
-        stripsRef.current.length > 0 &&
-        (window as any).electronAPI &&
-        now - lastOutputTimeRef.current >= outputInterval
-      ) {
+      // ── Non-scene DMX output ──────────────────────────────────────────
+      if (!sceneModeRef.current && isOutputTick) {
         lastOutputTimeRef.current = now;
         const px = new Uint8Array(canvas.width * canvas.height * 4);
         gl.readPixels(0, 0, canvas.width, canvas.height, gl.RGBA, gl.UNSIGNED_BYTE, px);
-        const universes = buildUniverses(stripsRef.current, px, canvas.width, canvas.height);
-        (window as any).electronAPI.sendFrame(universes);
+        sendOutput(buildUniverses(stripsRef.current, px, canvas.width, canvas.height));
       }
+
       const fps = fpsRef.current;
       fps.frames++;
       if (now - fps.last >= 1000) { onFps(fps.frames); fps.frames = 0; fps.last = now; }

@@ -195,6 +195,8 @@ export default function App() {
             activeEffect={activeEffect}
             effectParams={effectParams}
             outputEnabled={output.enabled}
+            dmxEnabled={output.dmxEnabled}
+            dmxUniverse={output.dmxUniverse}
             onFps={setFps}
             onBpm={setBpm}
             selectedStripIds={selectedIds}

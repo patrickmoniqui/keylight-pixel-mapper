@@ -39,4 +39,15 @@ export interface OutputConfig {
   protocol: 'artnet' | 'sacn' | 'both';
   enabled: boolean;
   broadcastAddress: string;
+  artnetMode: 'broadcast' | 'unicast';
+  // USB DMX (WebSerial) — independent of Art-Net/sACN
+  dmxEnabled: boolean;
+  dmxUniverse: number;  // which universe to send to the dongle (0-based)
+  dmxType: 'pro' | 'open'; // ENTTEC DMX USB Pro vs Open DMX USB
+}
+
+export interface ArtNode {
+  ip: string;
+  name: string;
+  universes: number[];
 }

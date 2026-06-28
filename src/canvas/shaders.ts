@@ -495,3 +495,17 @@ out vec4 fragColor;
 void main() {
   fragColor = texture(u_tex, v_uv);
 }`;
+
+// Samples an effect FBO at each LED's UV position.
+// u_ledPosTex is a RG32F texture: texel i = (u, v) for LED i.
+// Viewport must be set to (0, 0, totalLeds, 1) before drawing.
+export const LED_SAMPLE_FRAG = `#version 300 es
+precision highp float;
+uniform sampler2D u_effectTex;
+uniform highp sampler2D u_ledPosTex;
+out vec4 fragColor;
+void main() {
+  vec2 uv = texelFetch(u_ledPosTex, ivec2(int(gl_FragCoord.x), 0), 0).rg;
+  // Effect FBO: Y=0 at bottom; strip coords: Y=0 at top → flip
+  fragColor = texture(u_effectTex, vec2(uv.x, 1.0 - uv.y));
+}`;
