@@ -29,7 +29,8 @@ export default function App() {
   const snapshotStrips   = useStore((s) => s.snapshotStrips);
   const undo             = useStore((s) => s.undo);
   const redo             = useStore((s) => s.redo);
-  const sceneMode        = useStore((s) => s.sceneMode);
+  const sceneMode            = useStore((s) => s.sceneMode);
+  const fixturePreviewMode   = useStore((s) => s.fixturePreviewMode);
   const scenes           = useStore((s) => s.scenes);
   const activeSceneId    = useStore((s) => s.activeSceneId);
   const activeScene      = scenes.find((sc) => sc.id === activeSceneId) ?? null;
@@ -217,6 +218,7 @@ export default function App() {
             canvasWidth={canvasWidth}
             canvasHeight={canvasHeight}
             readOnly={!isEditMode}
+            fixturePreviewMode={fixturePreviewMode}
           />
         </div>
         {isEditMode && <PropertiesPanel />}

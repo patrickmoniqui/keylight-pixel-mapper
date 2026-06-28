@@ -2,7 +2,7 @@
 
 A GPU-accelerated pixel mapping desktop app for LED lighting. Place LED fixtures on a 2D canvas, run real-time GLSL shader effects, and stream output via Art-Net, sACN/E1.31, or USB DMX — all with sub-frame latency.
 
-Built for [KeyLight](https://github.com/djmoneykey/keylight) hardware (WLED-compatible), and works with any Art-Net or sACN device.
+Built for [KeyLight](https://www.keylight.ca) and works with any Art-Net or sACN device.
 
 ---
 
@@ -175,4 +175,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-Made by [djmoneykey](https://github.com/djmoneykey) · Built for the KeyLight and WLED community.
+Made by [patrickmoniqui](https://github.com/patrickmoniqui)

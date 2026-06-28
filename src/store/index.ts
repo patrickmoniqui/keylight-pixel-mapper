@@ -67,6 +67,9 @@ interface AppState {
   scenes: Scene[];
   activeSceneId: string | null;
   setSceneMode: (enabled: boolean) => void;
+  // Fixture preview
+  fixturePreviewMode: boolean;
+  setFixturePreviewMode: (v: boolean) => void;
   addScene: (scene: Scene) => void;
   removeScene: (id: string) => void;
   renameScene: (id: string, name: string) => void;
@@ -108,6 +111,7 @@ export const useStore = create<AppState>()(
       sceneMode: false,
       scenes: [] as Scene[],
       activeSceneId: null as string | null,
+      fixturePreviewMode: false,
 
       addStrip: (strip) =>
         set((s) => ({
@@ -221,6 +225,7 @@ export const useStore = create<AppState>()(
       setAudioDeviceId: (id) => set({ audioDeviceId: id }),
       setAppMode: (mode) => set({ appMode: mode }),
       setSceneMode: (enabled) => set({ sceneMode: enabled }),
+      setFixturePreviewMode: (v) => set({ fixturePreviewMode: v }),
 
       addScene: (scene) => set((s) => ({ scenes: [...s.scenes, scene], activeSceneId: scene.id })),
       removeScene: (id) =>

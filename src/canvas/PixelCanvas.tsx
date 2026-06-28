@@ -77,6 +77,7 @@ interface Props {
   readOnly?: boolean;
   dmxEnabled?: boolean;
   dmxUniverse?: number;
+  fixturePreviewMode?: boolean;
 }
 
 // ─── WebGL helpers ────────────────────────────────────────────────────────────
@@ -318,6 +319,7 @@ export function PixelCanvas({
   readOnly = false,
   dmxEnabled = false,
   dmxUniverse = 0,
+  fixturePreviewMode = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -354,6 +356,12 @@ export function PixelCanvas({
   const maskCacheRef = useRef(new Map<string, { data: Uint8Array; hash: string }>());
   const ledPosRef = useRef<{ uvs: Float32Array; ids: string[]; total: number }>({ uvs: new Float32Array(0), ids: [], total: 0 });
   const ledPosDirtyRef = useRef(true);
+  const fixturePreviewModeRef = useRef(fixturePreviewMode);
+  fixturePreviewModeRef.current = fixturePreviewMode;
+  const dotsProgRef = useRef<WebGLProgram | null>(null);
+  const dotsVBORef  = useRef<WebGLBuffer | null>(null);
+  const quadBufRef  = useRef<WebGLBuffer | null>(null);
+  const pixelBufRef = useRef<Uint8Array | null>(null);
 
   // Polygon drawing state
   const [previewPoint, setPreviewPoint] = useState<{ x: number; y: number } | null>(null);
@@ -405,6 +413,7 @@ export function PixelCanvas({
     glRef.current = gl;
     maskCacheRef.current.clear();
     const buf = gl.createBuffer();
+    quadBufRef.current = buf;
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     for (const [name, def] of Object.entries(EFFECTS)) {
@@ -477,6 +486,26 @@ export function PixelCanvas({
         ledSampleTex,
       };
     } catch (e) { console.error('Scene shaders:', e); }
+
+    // Fixture preview dots program
+    try {
+      const dotsVert = `#version 300 es
+in vec2 a_pos; in vec3 a_color; out vec3 v_color; uniform float u_size;
+void main() {
+  v_color = a_color;
+  gl_Position = vec4(a_pos.x * 2.0 - 1.0, 1.0 - a_pos.y * 2.0, 0.0, 1.0);
+  gl_PointSize = u_size;
+}`;
+      const dotsFrag = `#version 300 es
+precision highp float; in vec3 v_color; out vec4 fragColor;
+void main() {
+  vec2 c = gl_PointCoord - 0.5;
+  if (dot(c, c) > 0.25) discard;
+  fragColor = vec4(v_color, 1.0);
+}`;
+      dotsProgRef.current = createProgram(gl, dotsVert, dotsFrag);
+      dotsVBORef.current = gl.createBuffer();
+    } catch (e) { console.error('Dots shader:', e); }
   }, [canvasWidth, canvasHeight]);
 
   // Rebuild LED UV positions whenever strips change
@@ -526,6 +555,9 @@ export function PixelCanvas({
     const loop = () => {
       const now = performance.now();
       const t = (now - t0) / 1000;
+
+      // Ensure the quad buffer is always bound before effect shaders run
+      if (quadBufRef.current) gl.bindBuffer(gl.ARRAY_BUFFER, quadBufRef.current);
 
       // Upload LED positions to GPU if strips changed
       if (ledPosDirtyRef.current && sceneFBORef.current && ledPosRef.current.total > 0) {
@@ -799,6 +831,44 @@ export function PixelCanvas({
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
 
+      // ── Fixture preview: sample LED colors from canvas, clear to black, draw dots
+      if (fixturePreviewModeRef.current && ledPosRef.current.total > 0 && dotsProgRef.current && dotsVBORef.current) {
+        const { uvs, total } = ledPosRef.current;
+        const W = canvas.width, H = canvas.height;
+        const needed = W * H * 4;
+        if (!pixelBufRef.current || pixelBufRef.current.length !== needed)
+          pixelBufRef.current = new Uint8Array(needed);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, pixelBufRef.current);
+        const dotData = new Float32Array(total * 5);
+        for (let i = 0; i < total; i++) {
+          const u = uvs[i * 2], v = uvs[i * 2 + 1];
+          const px = Math.min(Math.floor(u * W), W - 1);
+          const py = Math.min(Math.floor(v * H), H - 1);
+          const off = (py * W + px) * 4;
+          dotData[i * 5    ] = u;
+          dotData[i * 5 + 1] = v;
+          dotData[i * 5 + 2] = pixelBufRef.current[off]     / 255;
+          dotData[i * 5 + 3] = pixelBufRef.current[off + 1] / 255;
+          dotData[i * 5 + 4] = pixelBufRef.current[off + 2] / 255;
+        }
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        const dp = dotsProgRef.current;
+        gl.useProgram(dp);
+        gl.bindBuffer(gl.ARRAY_BUFFER, dotsVBORef.current);
+        gl.bufferData(gl.ARRAY_BUFFER, dotData, gl.DYNAMIC_DRAW);
+        const posLoc = gl.getAttribLocation(dp, 'a_pos');
+        const colLoc = gl.getAttribLocation(dp, 'a_color');
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 20, 0);
+        gl.enableVertexAttribArray(colLoc);
+        gl.vertexAttribPointer(colLoc, 3, gl.FLOAT, false, 20, 8);
+        const sizeLoc = gl.getUniformLocation(dp, 'u_size');
+        if (sizeLoc) gl.uniform1f(sizeLoc, Math.max(4, Math.min(20, W * 0.008)));
+        gl.drawArrays(gl.POINTS, 0, total);
+      }
+
       const fps = fpsRef.current;
       fps.frames++;
       if (now - fps.last >= 1000) { onFps(fps.frames); fps.frames = 0; fps.last = now; }
@@ -999,7 +1069,7 @@ export function PixelCanvas({
 
       <svg
         ref={svgRef}
-        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: svgCursor }}
+        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: svgCursor, display: fixturePreviewMode ? 'none' : undefined }}
         viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
         preserveAspectRatio="none"
         onPointerMove={handlePointerMove}

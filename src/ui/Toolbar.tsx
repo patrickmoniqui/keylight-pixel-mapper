@@ -21,8 +21,10 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
   const setOutput         = useStore((s) => s.setOutput);
   const fps               = useStore((s) => s.fps);
   const bpm               = useStore((s) => s.bpm);
-  const showGrid          = useStore((s) => s.showGrid);
-  const toggleGrid        = useStore((s) => s.toggleGrid);
+  const showGrid              = useStore((s) => s.showGrid);
+  const toggleGrid            = useStore((s) => s.toggleGrid);
+  const fixturePreviewMode    = useStore((s) => s.fixturePreviewMode);
+  const setFixturePreviewMode = useStore((s) => s.setFixturePreviewMode);
   const targetFps         = useStore((s) => s.targetFps);
   const setTargetFps      = useStore((s) => s.setTargetFps);
   const audioDeviceId     = useStore((s) => s.audioDeviceId);
@@ -235,6 +237,16 @@ export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
         <button className={`output-btn ${output.enabled ? 'on' : ''}`} onClick={toggleOutput} title="Toggle output (Space)">
           {output.enabled ? '⬤ Live' : '◯ Output Off'}
         </button>
+
+        {appMode === 'perform' && (
+          <button
+            className={`preview-dots-btn${fixturePreviewMode ? ' active' : ''}`}
+            onClick={() => setFixturePreviewMode(!fixturePreviewMode)}
+            title="Fixture preview — show only fixture pixels against a black background"
+          >
+            ◉ Fixtures Only
+          </button>
+        )}
 
         {/* Settings popover anchor */}
         <div className="settings-anchor" ref={settingsRef}>
