@@ -34,11 +34,14 @@ interface AppState {
   effectParams: Record<string, Record<string, string | number>>;
   showGrid: boolean;
   targetFps: number;
+  canvasWidth: number;
+  canvasHeight: number;
 
   addStrip: (strip: Strip) => void;
   updateStrip: (id: string, updates: Partial<Strip>) => void;
   removeStrip: (id: string) => void;
   duplicateStrip: (id: string, newId: string) => void;
+  reorderStrips: (fromId: string, toId: string, position: 'before' | 'after') => void;
   snapshotStrips: () => void;
   undo: () => void;
   redo: () => void;
@@ -51,10 +54,14 @@ interface AppState {
   setEffectShortcut: (effect: string, key: string | null) => void;
   toggleGrid: () => void;
   setTargetFps: (fps: number) => void;
+  setCanvasSize: (w: number, h: number) => void;
   setEffectParam: (effect: string, key: string, value: string | number) => void;
   audioDeviceId: string;
   setAudioDeviceId: (id: string) => void;
   loadStrips: (strips: Strip[]) => void;
+  // App mode
+  appMode: 'edit' | 'perform';
+  setAppMode: (mode: 'edit' | 'perform') => void;
   // Scene mode
   sceneMode: boolean;
   sceneLayers: SceneLayer[];
@@ -86,7 +93,10 @@ export const useStore = create<AppState>()(
       effectParams: {} as Record<string, Record<string, string | number>>,
       showGrid: false,
       targetFps: 30,
+      canvasWidth: 1280,
+      canvasHeight: 720,
       audioDeviceId: '',
+      appMode: 'edit' as 'edit' | 'perform',
       sceneMode: false,
       sceneLayers: [] as SceneLayer[],
       activeLayerId: null as string | null,
@@ -130,6 +140,19 @@ export const useStore = create<AppState>()(
             strips: [...s.strips, copy],
             selectedStripIds: [newId],
           };
+        }),
+
+      reorderStrips: (fromId, toId, position) =>
+        set((s) => {
+          const from = s.strips.find((strip) => strip.id === fromId);
+          if (!from || fromId === toId) return s;
+          const without = s.strips.filter((strip) => strip.id !== fromId);
+          const toIdx = without.findIndex((strip) => strip.id === toId);
+          if (toIdx < 0) return s;
+          const insertAt = position === 'before' ? toIdx : toIdx + 1;
+          const next = [...without];
+          next.splice(insertAt, 0, from);
+          return { past: pushPast(s.past, s.strips), future: [], strips: next };
         }),
 
       // Call before any drag or nudge begins — records current strips into history
@@ -186,7 +209,9 @@ export const useStore = create<AppState>()(
 
       toggleGrid: () => set((s) => ({ showGrid: !s.showGrid })),
       setTargetFps: (fps) => set({ targetFps: fps }),
+      setCanvasSize: (w, h) => set({ canvasWidth: w, canvasHeight: h }),
       setAudioDeviceId: (id) => set({ audioDeviceId: id }),
+      setAppMode: (mode) => set({ appMode: mode }),
       setSceneMode: (enabled) => set({ sceneMode: enabled }),
       addSceneLayer: (layer) => set((s) => ({ sceneLayers: [...s.sceneLayers, layer] })),
       updateSceneLayer: (id, updates) =>
@@ -231,8 +256,11 @@ export const useStore = create<AppState>()(
         effectShortcuts: state.effectShortcuts,
         showGrid: state.showGrid,
         targetFps: state.targetFps,
+        canvasWidth: state.canvasWidth,
+        canvasHeight: state.canvasHeight,
         effectParams: state.effectParams,
         audioDeviceId: state.audioDeviceId,
+        appMode: state.appMode,
         sceneMode: state.sceneMode,
         sceneLayers: state.sceneLayers,
         // past/future not persisted — history doesn't survive restarts

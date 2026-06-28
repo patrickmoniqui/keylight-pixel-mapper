@@ -1,49 +1,55 @@
 import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
-import { EFFECTS, EFFECT_CATEGORIES } from '../canvas/shaders';
-import { EffectParams } from './EffectParams';
+import { EFFECTS } from '../canvas/shaders';
+import { ShortcutsModal } from './ShortcutsModal';
 import { Strip } from '../fixtures/types';
 
-const RESERVED = new Set(['Escape', 'Delete', 'Backspace', ' ', 'Tab',
-  'F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12']);
-
-function keyLabel(key: string): string {
-  const map: Record<string, string> = {
-    ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Enter: '↵',
-  };
-  return map[key] ?? key.toUpperCase();
+interface ToolbarProps {
+  appMode: 'edit' | 'perform';
+  setAppMode: (mode: 'edit' | 'perform') => void;
 }
 
-export function Toolbar() {
-  const strips        = useStore((s) => s.strips);
-  const loadStrips    = useStore((s) => s.loadStrips);
-  const activeEffect  = useStore((s) => s.setActiveEffect);
-  const active        = useStore((s) => s.activeEffect);
-  const setActiveEffect = activeEffect;
-  const output        = useStore((s) => s.output);
-  const setOutput     = useStore((s) => s.setOutput);
-  const fps           = useStore((s) => s.fps);
-  const bpm           = useStore((s) => s.bpm);
-  const effectShortcuts  = useStore((s) => s.effectShortcuts);
-  const setEffectShortcut = useStore((s) => s.setEffectShortcut);
-  const showGrid      = useStore((s) => s.showGrid);
-  const toggleGrid    = useStore((s) => s.toggleGrid);
-  const targetFps     = useStore((s) => s.targetFps);
-  const setTargetFps  = useStore((s) => s.setTargetFps);
-  const audioDeviceId = useStore((s) => s.audioDeviceId);
-  const setAudioDeviceId = useStore((s) => s.setAudioDeviceId);
-  const canUndo       = useStore((s) => s.past.length > 0);
-  const canRedo       = useStore((s) => s.future.length > 0);
-  const undo          = useStore((s) => s.undo);
-  const redo          = useStore((s) => s.redo);
-  const sceneMode     = useStore((s) => s.sceneMode);
-  const setSceneMode  = useStore((s) => s.setSceneMode);
-
-  const [capturing, setCapturing] = useState<string | null>(null);
-  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
-  const importRef = useRef<HTMLInputElement>(null);
+export function Toolbar({ appMode, setAppMode }: ToolbarProps) {
+  const strips            = useStore((s) => s.strips);
+  const loadStrips        = useStore((s) => s.loadStrips);
+  const activeEffect      = useStore((s) => s.setActiveEffect);
+  const active            = useStore((s) => s.activeEffect);
+  const setActiveEffect   = activeEffect;
+  const output            = useStore((s) => s.output);
+  const setOutput         = useStore((s) => s.setOutput);
+  const fps               = useStore((s) => s.fps);
+  const bpm               = useStore((s) => s.bpm);
+  const showGrid          = useStore((s) => s.showGrid);
+  const toggleGrid        = useStore((s) => s.toggleGrid);
+  const targetFps         = useStore((s) => s.targetFps);
+  const setTargetFps      = useStore((s) => s.setTargetFps);
+  const audioDeviceId     = useStore((s) => s.audioDeviceId);
+  const setAudioDeviceId  = useStore((s) => s.setAudioDeviceId);
+  const canvasWidth       = useStore((s) => s.canvasWidth);
+  const canvasHeight      = useStore((s) => s.canvasHeight);
+  const setCanvasSize     = useStore((s) => s.setCanvasSize);
 
   const isReactive = EFFECTS[active]?.category === 'Reactive';
+
+  const PRESETS = [
+    { label: '960 × 540', w: 960, h: 540 },
+    { label: '1280 × 720', w: 1280, h: 720 },
+    { label: '1920 × 1080', w: 1920, h: 1080 },
+    { label: '3840 × 2160', w: 3840, h: 2160 },
+  ];
+  const matchedPreset = PRESETS.find((p) => p.w === canvasWidth && p.h === canvasHeight);
+  const [customW, setCustomW] = useState(String(canvasWidth));
+  const [customH, setCustomH] = useState(String(canvasHeight));
+
+  const [micDevices, setMicDevices]       = useState<MediaDeviceInfo[]>([]);
+  const [showSettings, setShowSettings]   = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [ipInput, setIpInput]             = useState(output.broadcastAddress);
+  const importRef                       = useRef<HTMLInputElement>(null);
+  const settingsRef                     = useRef<HTMLDivElement>(null);
+
+  // Sync IP input when store changes externally (e.g. load from file)
+  useEffect(() => { setIpInput(output.broadcastAddress); }, [output.broadcastAddress]);
 
   // Enumerate microphone devices when a Reactive effect is active
   useEffect(() => {
@@ -53,32 +59,21 @@ export function Toolbar() {
         .then((devs) => setMicDevices(devs.filter((d) => d.kind === 'audioinput')))
         .catch(() => {});
     enumerate();
-    // Re-enumerate after 1 s to pick up labels once mic permission is granted
     const t = setTimeout(enumerate, 1000);
     return () => clearTimeout(t);
   }, [isReactive]);
 
-  // Shortcut capture keyboard handler
+  // Close settings popover when clicking outside
   useEffect(() => {
-    if (!capturing) return;
-    const handler = (e: KeyboardEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.key === 'Escape') { setCapturing(null); return; }
-      if (RESERVED.has(e.key) || e.ctrlKey || e.metaKey || e.altKey) return;
-      setEffectShortcut(capturing, e.key);
-      setCapturing(null);
+    if (!showSettings) return;
+    const handler = (e: MouseEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(e.target as Node)) {
+        setShowSettings(false);
+      }
     };
-    window.addEventListener('keydown', handler, true);
-    return () => window.removeEventListener('keydown', handler, true);
-  }, [capturing, setEffectShortcut]);
-
-  useEffect(() => {
-    if (!capturing) return;
-    const handler = () => setCapturing(null);
     window.addEventListener('mousedown', handler);
     return () => window.removeEventListener('mousedown', handler);
-  }, [capturing]);
+  }, [showSettings]);
 
   // Listen for native menu File > Export / Import
   useEffect(() => {
@@ -90,6 +85,17 @@ export function Toolbar() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ? key opens shortcuts modal
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as Element).tagName;
+      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey) setShowShortcuts((v) => !v);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   const toggleOutput = () => {
     const next = !output.enabled;
     setOutput({ enabled: next });
@@ -99,6 +105,11 @@ export function Toolbar() {
   const setProtocol = (protocol: 'artnet' | 'sacn' | 'both') => {
     setOutput({ protocol });
     (window as any).electronAPI?.setOutputConfig({ ...output, protocol });
+  };
+
+  const commitIp = () => {
+    setOutput({ broadcastAddress: ipInput });
+    (window as any).electronAPI?.setOutputConfig({ ...output, broadcastAddress: ipInput });
   };
 
   // ── Export patch ─────────────────────────────────────────────────────────
@@ -132,119 +143,187 @@ export function Toolbar() {
 
   return (
     <div className="header-area">
-      {capturing && (
-        <div className="capture-banner">
-          Press any key to assign to <strong>{EFFECTS[capturing]?.label}</strong>
-          {effectShortcuts[capturing] && (
-            <>{' · '}<span className="capture-clear" onClick={(e) => {
-              e.stopPropagation();
-              setEffectShortcut(capturing, null);
-              setCapturing(null);
-            }}>Clear ({keyLabel(effectShortcuts[capturing])})</span></>
-          )}
-          <span className="capture-esc">Esc to cancel</span>
-        </div>
-      )}
-
       <div className="toolbar">
-        <span className="logo">KeyLight Pixel Mapper</span>
+        <span className="logo">KeyLight</span>
+
+        <div className="mode-switch">
+          <button
+            className={`mode-btn edit${appMode === 'edit' ? ' active' : ''}`}
+            onClick={() => setAppMode('edit')}
+            title="Edit — patch fixtures and layout"
+          >Edit</button>
+          <button
+            className={`mode-btn perform${appMode === 'perform' ? ' active' : ''}`}
+            onClick={() => setAppMode('perform')}
+            title="Perform — effects, scenes, live output"
+          >Perform</button>
+        </div>
+
         <div className="divider" />
-        <div className="section-label">Protocol</div>
-        {(['artnet', 'sacn', 'both'] as const).map((p) => (
-          <button key={p} className={output.protocol === p ? 'active' : ''} onClick={() => setProtocol(p)}>
-            {p === 'artnet' ? 'Art-Net' : p === 'sacn' ? 'sACN' : 'Both'}
-          </button>
-        ))}
-        <div className="divider" />
+
         <button className={`output-btn ${output.enabled ? 'on' : ''}`} onClick={toggleOutput} title="Toggle output (Space)">
           {output.enabled ? '⬤ Live' : '◯ Output Off'}
         </button>
-        <div className="divider" />
-        <button onClick={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">↩ Undo</button>
-        <button onClick={redo} disabled={!canRedo} title="Redo (Ctrl+Y)">↪ Redo</button>
-        <div className="divider" />
-        <button className={showGrid ? 'active' : ''} onClick={toggleGrid} title="Toggle grid (G)">⊞ Grid</button>
-        <button className={sceneMode ? 'active' : ''} onClick={() => setSceneMode(!sceneMode)} title="Scene mode — multi-layer compositing">⧉ Scene</button>
-        <div className="divider" />
-        <input ref={importRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImport} />
-        <label className="fps-label">
-          Out
-          <select
-            className="fps-select"
-            value={targetFps}
-            onChange={(e) => setTargetFps(Number(e.target.value))}
-            title="Output frames per second sent to fixtures"
+
+        {/* Settings popover anchor */}
+        <div className="settings-anchor" ref={settingsRef}>
+          <button
+            className={showSettings ? 'active' : ''}
+            onClick={() => setShowSettings((v) => !v)}
+            title="Output &amp; audio settings"
           >
-            {[10, 15, 20, 25, 30, 40, 44, 60].map((n) => (
-              <option key={n} value={n}>{n} fps</option>
-            ))}
-          </select>
-        </label>
+            ⚙
+          </button>
+
+          {showSettings && (
+            <div className="settings-popover">
+              <div className="settings-group">
+                <div className="settings-group-label">Output</div>
+
+                <div className="settings-row">
+                  <span className="settings-row-label">Protocol</span>
+                  <div className="proto-btns">
+                    {(['artnet', 'sacn', 'both'] as const).map((p) => (
+                      <button key={p} className={output.protocol === p ? 'active' : ''} onClick={() => setProtocol(p)}>
+                        {p === 'artnet' ? 'Art-Net' : p === 'sacn' ? 'sACN' : 'Both'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {(output.protocol === 'artnet' || output.protocol === 'both') && (
+                  <div className="settings-row">
+                    <span className="settings-row-label">Art-Net IP</span>
+                    <input
+                      className="settings-input"
+                      value={ipInput}
+                      onChange={(e) => setIpInput(e.target.value)}
+                      onBlur={commitIp}
+                      onKeyDown={(e) => { if (e.key === 'Enter') commitIp(); }}
+                      placeholder="255.255.255.255"
+                      spellCheck={false}
+                    />
+                  </div>
+                )}
+
+                <div className="settings-row">
+                  <span className="settings-row-label">Frame Rate</span>
+                  <select
+                    className="settings-select"
+                    value={targetFps}
+                    onChange={(e) => setTargetFps(Number(e.target.value))}
+                  >
+                    {[10, 15, 20, 25, 30, 40, 44, 60].map((n) => (
+                      <option key={n} value={n}>{n} fps</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {isReactive && (
+                <div className="settings-group">
+                  <div className="settings-group-label">Audio</div>
+                  <div className="settings-row">
+                    <span className="settings-row-label">Microphone</span>
+                    <select
+                      className="settings-select"
+                      value={audioDeviceId}
+                      onChange={(e) => setAudioDeviceId(e.target.value)}
+                    >
+                      <option value="">Default</option>
+                      {micDevices.map((d) => (
+                        <option key={d.deviceId} value={d.deviceId}>
+                          {d.label || `Mic ${d.deviceId.slice(0, 6)}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <div className="settings-group">
+                <div className="settings-group-label">Canvas</div>
+                <div className="settings-row">
+                  <span className="settings-row-label">Grid</span>
+                  <button
+                    className={showGrid ? 'active' : ''}
+                    onClick={toggleGrid}
+                    title="Toggle grid (G)"
+                  >
+                    {showGrid ? 'On' : 'Off'}
+                  </button>
+                </div>
+                <div className="settings-row">
+                  <span className="settings-row-label">Resolution</span>
+                  <select
+                    className="settings-select"
+                    value={matchedPreset ? matchedPreset.label : 'Custom'}
+                    onChange={(e) => {
+                      const p = PRESETS.find((p) => p.label === e.target.value);
+                      if (p) {
+                        setCanvasSize(p.w, p.h);
+                        setCustomW(String(p.w));
+                        setCustomH(String(p.h));
+                      }
+                    }}
+                  >
+                    {PRESETS.map((p) => (
+                      <option key={p.label} value={p.label}>{p.label}</option>
+                    ))}
+                    <option value="Custom">Custom</option>
+                  </select>
+                </div>
+                {!matchedPreset && (
+                  <div className="settings-row">
+                    <span className="settings-row-label">Size</span>
+                    <div className="custom-res-inputs">
+                      <input
+                        className="settings-input res-input"
+                        type="number"
+                        min={64}
+                        max={7680}
+                        value={customW}
+                        onChange={(e) => setCustomW(e.target.value)}
+                        onBlur={() => {
+                          const w = Math.max(64, Math.min(7680, parseInt(customW) || canvasWidth));
+                          setCustomW(String(w));
+                          setCanvasSize(w, canvasHeight);
+                        }}
+                      />
+                      <span className="res-x">×</span>
+                      <input
+                        className="settings-input res-input"
+                        type="number"
+                        min={64}
+                        max={4320}
+                        value={customH}
+                        onChange={(e) => setCustomH(e.target.value)}
+                        onBlur={() => {
+                          const h = Math.max(64, Math.min(4320, parseInt(customH) || canvasHeight));
+                          setCustomH(String(h));
+                          setCanvasSize(canvasWidth, h);
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+                <div className="settings-note">{canvasWidth} × {canvasHeight} px</div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <input ref={importRef} type="file" accept=".json" style={{ display: 'none' }} onChange={handleImport} />
         {bpm > 0 && <span className="bpm-display">{bpm} BPM</span>}
         <div className="fps">{fps} fps</div>
+        <button
+          className="shortcuts-trigger"
+          onClick={() => setShowShortcuts((v) => !v)}
+          title="Keyboard shortcuts (?)"
+        >?</button>
       </div>
 
-      {isReactive && micDevices.length > 0 && (
-        <div className="mic-bar">
-          <span className="mic-label">Mic</span>
-          <select
-            className="mic-select"
-            value={audioDeviceId}
-            onChange={(e) => setAudioDeviceId(e.target.value)}
-          >
-            <option value="">Default</option>
-            {micDevices.map((d) => (
-              <option key={d.deviceId} value={d.deviceId}>
-                {d.label || `Microphone ${d.deviceId.slice(0, 6)}`}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div className="effects-bar">
-        {EFFECT_CATEGORIES.map((cat) => {
-          const catEffects = Object.entries(EFFECTS).filter(([, d]) => d.category === cat);
-          return (
-            <div key={cat} className="effect-group">
-              <span className="effect-cat">{cat}</span>
-              {catEffects.map(([id, def]) => {
-                const shortcut = effectShortcuts[id];
-                const isCapturing = capturing === id;
-                return (
-                  <button
-                    key={id}
-                    className={`fx-btn ${active === id ? 'active' : ''} ${isCapturing ? 'capturing' : ''}`}
-                    onClick={() => { setCapturing(null); setActiveEffect(id); }}
-                    onContextMenu={(e) => { e.preventDefault(); setCapturing((p) => p === id ? null : id); }}
-                    title={`${def.label}${shortcut ? ` [${keyLabel(shortcut)}]` : ''}\nRight-click to assign shortcut`}
-                  >
-                    {def.label}
-                    {shortcut && !isCapturing && <kbd className="shortcut-badge">{keyLabel(shortcut)}</kbd>}
-                    {isCapturing && <kbd className="shortcut-badge capturing">?</kbd>}
-                  </button>
-                );
-              })}
-            </div>
-          );
-        })}
-      </div>
-
-      <EffectParams />
-
-      <div className="shortcut-legend">
-        <span><kbd>Space</kbd> Output</span>
-        <span><kbd>Esc</kbd> Deselect</span>
-        <span><kbd>Del</kbd> Remove</span>
-        <span><kbd>Ctrl+A</kbd> Select all</span>
-        <span><kbd>Ctrl+D</kbd> Duplicate</span>
-        <span><kbd>↑↓←→</kbd> Nudge <small>(+Shift fine)</small></span>
-        <span><kbd>Ctrl+Z</kbd> Undo</span>
-        <span><kbd>Ctrl+Y</kbd> Redo</span>
-        <span><kbd>G</kbd> Grid</span>
-        <span><kbd>Shift+click</kbd> Multi-select</span>
-        <span className="legend-hint">Right-click effect to assign key</span>
-      </div>
+      {showShortcuts && <ShortcutsModal onClose={() => setShowShortcuts(false)} />}
     </div>
   );
 }

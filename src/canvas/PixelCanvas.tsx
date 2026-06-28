@@ -74,6 +74,9 @@ interface Props {
   sceneLayers: SceneLayer[];
   drawingLayerId: string | null;
   onAddPolygonPoint: (layerId: string, pt: { x: number; y: number }) => void;
+  canvasWidth: number;
+  canvasHeight: number;
+  readOnly?: boolean;
 }
 
 // ─── WebGL helpers ────────────────────────────────────────────────────────────
@@ -139,20 +142,20 @@ function buildUniverses(
 const GRID_COLS = 16;
 const GRID_ROWS = 9;
 
-function GridOverlay() {
-  const cols = Array.from({ length: GRID_COLS - 1 }, (_, i) => (i + 1) * (960 / GRID_COLS));
-  const rows = Array.from({ length: GRID_ROWS - 1 }, (_, i) => (i + 1) * (540 / GRID_ROWS));
-  const cx = 960 / 2;
-  const cy = 540 / 2;
+function GridOverlay({ cw, ch }: { cw: number; ch: number }) {
+  const cols = Array.from({ length: GRID_COLS - 1 }, (_, i) => (i + 1) * (cw / GRID_COLS));
+  const rows = Array.from({ length: GRID_ROWS - 1 }, (_, i) => (i + 1) * (ch / GRID_ROWS));
+  const cx = cw / 2;
+  const cy = ch / 2;
   return (
     <g pointerEvents="none">
       {cols.map((x) => (
-        <line key={`v${x}`} x1={x} y1={0} x2={x} y2={540}
+        <line key={`v${x}`} x1={x} y1={0} x2={x} y2={ch}
           stroke="white" strokeWidth={x === cx ? 0.8 : 0.4}
           opacity={x === cx ? 0.3 : 0.12} />
       ))}
       {rows.map((y) => (
-        <line key={`h${y}`} x1={0} y1={y} x2={960} y2={y}
+        <line key={`h${y}`} x1={0} y1={y} x2={cw} y2={y}
           stroke="white" strokeWidth={y === cy ? 0.8 : 0.4}
           opacity={y === cy ? 0.3 : 0.12} />
       ))}
@@ -162,17 +165,17 @@ function GridOverlay() {
 
 // ─── Gizmo geometry ───────────────────────────────────────────────────────────
 
-function getGizmoGeometry(strip: Strip) {
+function getGizmoGeometry(strip: Strip, cw: number, ch: number) {
   const rad = (strip.angle * Math.PI) / 180;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
   const dots = Array.from({ length: strip.pixelCount }, (_, i) => ({
-    x: (strip.x + cos * i * strip.spacing) * 960,
-    y: (strip.y + sin * i * strip.spacing) * 540,
+    x: (strip.x + cos * i * strip.spacing) * cw,
+    y: (strip.y + sin * i * strip.spacing) * ch,
   }));
-  const anchor = dots[0] ?? { x: strip.x * 960, y: strip.y * 540 };
+  const anchor = dots[0] ?? { x: strip.x * cw, y: strip.y * ch };
   const lastDot = dots[strip.pixelCount - 1] ?? anchor;
-  const sdx = cos * 960, sdy = sin * 540;
+  const sdx = cos * cw, sdy = sin * ch;
   const slen = Math.sqrt(sdx * sdx + sdy * sdy) || 1;
   const sux = sdx / slen, suy = sdy / slen;
   const spx = -suy, spy = sux;
@@ -183,12 +186,12 @@ function getGizmoGeometry(strip: Strip) {
   return { dots, anchor, lastDot, rotHandle, spacingHandle, midDot };
 }
 
-function getMultiGizmoGeometry(selectedStrips: Strip[]) {
+function getMultiGizmoGeometry(selectedStrips: Strip[], cw: number, ch: number) {
   if (selectedStrips.length === 0) return null;
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   let sumAX = 0, sumAY = 0;
   for (const strip of selectedStrips) {
-    const { dots, anchor } = getGizmoGeometry(strip);
+    const { dots, anchor } = getGizmoGeometry(strip, cw, ch);
     sumAX += anchor.x;
     sumAY += anchor.y;
     for (const dot of dots) {
@@ -203,7 +206,7 @@ function getMultiGizmoGeometry(selectedStrips: Strip[]) {
   const bw = (maxX - minX) + 2 * pad;
   const bh = (maxY - minY) + 2 * pad;
   return {
-    centroidNX: cx / 960, centroidNY: cy / 540,
+    centroidNX: cx / cw, centroidNY: cy / ch,
     centroidSX: cx, centroidSY: cy,
     bx, by, bw, bh,
     rotHandle: { x: cx, y: by - 28 },
@@ -249,6 +252,9 @@ export function PixelCanvas({
   sceneLayers,
   drawingLayerId,
   onAddPolygonPoint,
+  canvasWidth,
+  canvasHeight,
+  readOnly = false,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -284,6 +290,11 @@ export function PixelCanvas({
   const [previewPoint, setPreviewPoint] = useState<{ x: number; y: number } | null>(null);
   const drawingLayerIdRef = useRef(drawingLayerId);
   drawingLayerIdRef.current = drawingLayerId;
+
+  const canvasWRef = useRef(canvasWidth);
+  const canvasHRef = useRef(canvasHeight);
+  canvasWRef.current = canvasWidth;
+  canvasHRef.current = canvasHeight;
 
   useEffect(() => { if (!drawingLayerId) setPreviewPoint(null); }, [drawingLayerId]);
 
@@ -323,6 +334,7 @@ export function PixelCanvas({
     const gl = canvas.getContext('webgl2');
     if (!gl) return;
     glRef.current = gl;
+    maskCacheRef.current.clear();
     const buf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, buf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
@@ -367,7 +379,7 @@ export function PixelCanvas({
         blitProgram: createProgram(gl, VERTEX_SHADER, BLIT_FRAG),
       };
     } catch (e) { console.error('Scene shaders:', e); }
-  }, []);
+  }, [canvasWidth, canvasHeight]);
 
   // ── Render loop ──────────────────────────────────────────────────────────
   const stripsRef = useRef(strips);
@@ -640,11 +652,12 @@ export function PixelCanvas({
   // ── Drop from fixture list ────────────────────────────────────────────────
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    if (readOnly) return;
     const id = e.dataTransfer.getData('stripId');
     if (!id) return;
     const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
     onStripDrop(id, (e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
-  }, [onStripDrop]);
+  }, [onStripDrop, readOnly]);
 
   // ── Pointer helpers ───────────────────────────────────────────────────────
   const getSvgPos = useCallback((e: React.PointerEvent) => {
@@ -652,8 +665,8 @@ export function PixelCanvas({
     if (!svg) return { x: 0, y: 0 };
     const r = svg.getBoundingClientRect();
     return {
-      x: (e.clientX - r.left) * (960 / r.width),
-      y: (e.clientY - r.top) * (540 / r.height),
+      x: (e.clientX - r.left) * (canvasWRef.current / r.width),
+      y: (e.clientY - r.top) * (canvasHRef.current / r.height),
     };
   }, []);
 
@@ -680,7 +693,7 @@ export function PixelCanvas({
     onSnapshot();
     (e.target as Element).setPointerCapture(e.pointerId);
     const pos = getSvgPos(e);
-    const nx = pos.x / 960, ny = pos.y / 540;
+    const nx = pos.x / canvasWRef.current, ny = pos.y / canvasHRef.current;
     dragRef.current = {
       type,
       stripId: selectedStrips[0]?.id ?? '',
@@ -698,19 +711,20 @@ export function PixelCanvas({
     // Drawing mode: track cursor for polygon preview
     if (drawingLayerIdRef.current) {
       const pos = getSvgPos(e);
-      setPreviewPoint({ x: pos.x / 960, y: pos.y / 540 });
+      setPreviewPoint({ x: pos.x / canvasWRef.current, y: pos.y / canvasHRef.current });
       return;
     }
     const drag = dragRef.current;
     if (!drag) return;
     const pos = getSvgPos(e);
-    const nx = pos.x / 960, ny = pos.y / 540;
+    const cw = canvasWRef.current, ch = canvasHRef.current;
+    const nx = pos.x / cw, ny = pos.y / ch;
     const { initStrip, initStrips, centroidNX, centroidNY } = drag;
 
     if (drag.type === 'move') {
       onUpdateStrip(drag.stripId, {
-        x: Math.max(0, Math.min(1, initStrip.x + (pos.x - drag.startSvgX) / 960)),
-        y: Math.max(0, Math.min(1, initStrip.y + (pos.y - drag.startSvgY) / 540)),
+        x: Math.max(0, Math.min(1, initStrip.x + (pos.x - drag.startSvgX) / cw)),
+        y: Math.max(0, Math.min(1, initStrip.y + (pos.y - drag.startSvgY) / ch)),
       });
     } else if (drag.type === 'rotate') {
       onUpdateStrip(drag.stripId, {
@@ -722,8 +736,8 @@ export function PixelCanvas({
       const projected = (nx - initStrip.x) * Math.cos(rad) + (ny - initStrip.y) * Math.sin(rad);
       onUpdateStrip(drag.stripId, { spacing: Math.max(0.002, Math.min(0.1, projected / midIdx)) });
     } else if (drag.type === 'move-multi') {
-      const dx = (pos.x - drag.startSvgX) / 960;
-      const dy = (pos.y - drag.startSvgY) / 540;
+      const dx = (pos.x - drag.startSvgX) / cw;
+      const dy = (pos.y - drag.startSvgY) / ch;
       for (const s of initStrips) {
         onUpdateStrip(s.id, {
           x: Math.max(0, Math.min(1, s.x + dx)),
@@ -774,7 +788,7 @@ export function PixelCanvas({
   // ── Derived gizmo data ────────────────────────────────────────────────────
   const isMulti = selectedStripIds.length > 1;
   const selectedStrips = strips.filter((s) => selectedStripIds.includes(s.id));
-  const multiGizmo = isMulti ? getMultiGizmoGeometry(selectedStrips) : null;
+  const multiGizmo = isMulti ? getMultiGizmoGeometry(selectedStrips, canvasWidth, canvasHeight) : null;
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -785,37 +799,49 @@ export function PixelCanvas({
     >
       <canvas
         ref={canvasRef}
-        width={960} height={540}
+        width={canvasWidth} height={canvasHeight}
         style={{ width: '100%', height: '100%', display: 'block', pointerEvents: 'none' }}
       />
 
       <svg
         ref={svgRef}
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', cursor: svgCursor }}
-        viewBox="0 0 960 540"
+        viewBox={`0 0 ${canvasWidth} ${canvasHeight}`}
         preserveAspectRatio="none"
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
       >
         {/* Background: deselect on click or add polygon vertex in draw mode */}
-        <rect x={0} y={0} width={960} height={540} fill="transparent"
+        <rect x={0} y={0} width={canvasWidth} height={canvasHeight} fill="transparent"
           onPointerDown={(e) => {
             if (drawingLayerIdRef.current) {
               const pos = getSvgPos(e);
-              onAddPolygonPoint(drawingLayerIdRef.current, { x: pos.x / 960, y: pos.y / 540 });
+              onAddPolygonPoint(drawingLayerIdRef.current, { x: pos.x / canvasWRef.current, y: pos.y / canvasHRef.current });
               return;
             }
             if (!dragRef.current) onSelectStrips([]);
           }} />
 
         {/* Grid overlay */}
-        {showGrid && <GridOverlay />}
+        {showGrid && <GridOverlay cw={canvasWidth} ch={canvasHeight} />}
 
         {/* Per-strip rendering */}
         {strips.map((strip) => {
-          const isSel = selectedStripIds.includes(strip.id);
-          const { dots, anchor, lastDot, rotHandle, spacingHandle, midDot } = getGizmoGeometry(strip);
+          const isSel = !readOnly && selectedStripIds.includes(strip.id);
+          const { dots, anchor, lastDot, rotHandle, spacingHandle, midDot } = getGizmoGeometry(strip, canvasWidth, canvasHeight);
+
+          // Perform (readOnly) mode: ghost dots only, no interaction
+          if (readOnly) {
+            return (
+              <g key={strip.id} pointerEvents="none">
+                {dots.map((dot, i) => (
+                  <circle key={i} cx={dot.x} cy={dot.y} r={3.5}
+                    fill="#fff" stroke="#555" strokeWidth={0.8} opacity={0.45} />
+                ))}
+              </g>
+            );
+          }
 
           const dotFill = isSel && !isMulti ? '#fff' : isSel ? '#c0e8ff' : '#aaa';
           const dotStroke = isSel ? '#0af' : '#555';
@@ -835,7 +861,7 @@ export function PixelCanvas({
                   strokeWidth={isSel ? 1.5 : 0.5} opacity={0.9}
                   style={{ cursor: drawingLayerId ? 'crosshair' : isSel && isMulti ? 'move' : isSel ? 'move' : 'pointer' }}
                   onPointerDown={(e) => {
-                    if (drawingLayerIdRef.current) return; // block fixture interaction in draw mode
+                    if (drawingLayerIdRef.current) return;
                     if (e.shiftKey) {
                       const newIds = selectedStripIds.includes(strip.id)
                         ? selectedStripIds.filter((id) => id !== strip.id)
@@ -951,7 +977,7 @@ export function PixelCanvas({
           const layer = sceneLayers.find((l) => l.id === drawingLayerId);
           if (!layer || layer.mask.type !== 'polygon') return null;
           const pts = layer.mask.points ?? [];
-          const canPts = pts.map((p) => ({ x: p.x * 960, y: p.y * 540 }));
+          const canPts = pts.map((p) => ({ x: p.x * canvasWidth, y: p.y * canvasHeight }));
           return (
             <g>
               {canPts.length >= 3 && (
@@ -969,12 +995,12 @@ export function PixelCanvas({
               {canPts.length > 0 && previewPoint && (
                 <line
                   x1={canPts[canPts.length - 1].x} y1={canPts[canPts.length - 1].y}
-                  x2={previewPoint.x * 960} y2={previewPoint.y * 540}
+                  x2={previewPoint.x * canvasWidth} y2={previewPoint.y * canvasHeight}
                   stroke="#0af" strokeWidth={1} strokeDasharray="4,4" opacity={0.6}
                   pointerEvents="none" />
               )}
               {canPts.length === 0 && (
-                <text x={480} y={270} textAnchor="middle" dominantBaseline="middle"
+                <text x={canvasWidth / 2} y={canvasHeight / 2} textAnchor="middle" dominantBaseline="middle"
                   fontSize={14} fill="#0af" opacity={0.5} pointerEvents="none">
                   Click to add polygon vertices
                 </text>

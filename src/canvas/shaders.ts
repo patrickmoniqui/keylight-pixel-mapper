@@ -478,7 +478,7 @@ out vec4 fragColor;
 void main() {
   vec4 base = texture(u_base, v_uv);
   vec4 layer = texture(u_layer, v_uv);
-  float alpha = texture(u_mask, v_uv).r * u_opacity;
+  float alpha = texture(u_mask, vec2(v_uv.x, 1.0 - v_uv.y)).r * u_opacity;
   vec3 blended;
   if (u_blend == 1) blended = min(base.rgb + layer.rgb, vec3(1.0));
   else if (u_blend == 2) blended = base.rgb * layer.rgb;

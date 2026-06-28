@@ -3,37 +3,58 @@ import { v4 as uuid } from 'uuid';
 import { Toolbar } from './ui/Toolbar';
 import { FixturePanel } from './ui/FixturePanel';
 import { PropertiesPanel } from './ui/PropertiesPanel';
-import { ScenePanel } from './ui/ScenePanel';
+import { PerformPanel } from './ui/PerformPanel';
 import { PixelCanvas } from './canvas/PixelCanvas';
 import { useStore } from './store';
 
 export default function App() {
-  const strips         = useStore((s) => s.strips);
-  const activeEffect   = useStore((s) => s.activeEffect);
-  const output         = useStore((s) => s.output);
-  const selectedIds    = useStore((s) => s.selectedStripIds);
-  const setFps         = useStore((s) => s.setFps);
-  const setBpm         = useStore((s) => s.setBpm);
-  const updateStrip    = useStore((s) => s.updateStrip);
+  const strips           = useStore((s) => s.strips);
+  const activeEffect     = useStore((s) => s.activeEffect);
+  const output           = useStore((s) => s.output);
+  const selectedIds      = useStore((s) => s.selectedStripIds);
+  const setFps           = useStore((s) => s.setFps);
+  const setBpm           = useStore((s) => s.setBpm);
+  const updateStrip      = useStore((s) => s.updateStrip);
   const setSelectedStrips = useStore((s) => s.setSelectedStrips);
-  const removeStrip    = useStore((s) => s.removeStrip);
-  const duplicateStrip = useStore((s) => s.duplicateStrip);
-  const setActiveEffect = useStore((s) => s.setActiveEffect);
-  const setOutput      = useStore((s) => s.setOutput);
-  const effectShortcuts = useStore((s) => s.effectShortcuts);
-  const effectParams   = useStore((s) => s.effectParams);
-  const audioDeviceId  = useStore((s) => s.audioDeviceId);
-  const showGrid       = useStore((s) => s.showGrid);
-  const toggleGrid     = useStore((s) => s.toggleGrid);
-  const targetFps      = useStore((s) => s.targetFps);
-  const snapshotStrips = useStore((s) => s.snapshotStrips);
-  const undo           = useStore((s) => s.undo);
-  const redo           = useStore((s) => s.redo);
-  const sceneMode      = useStore((s) => s.sceneMode);
-  const sceneLayers    = useStore((s) => s.sceneLayers);
+  const removeStrip      = useStore((s) => s.removeStrip);
+  const duplicateStrip   = useStore((s) => s.duplicateStrip);
+  const setActiveEffect  = useStore((s) => s.setActiveEffect);
+  const setOutput        = useStore((s) => s.setOutput);
+  const effectShortcuts  = useStore((s) => s.effectShortcuts);
+  const effectParams     = useStore((s) => s.effectParams);
+  const audioDeviceId    = useStore((s) => s.audioDeviceId);
+  const showGrid         = useStore((s) => s.showGrid);
+  const toggleGrid       = useStore((s) => s.toggleGrid);
+  const targetFps        = useStore((s) => s.targetFps);
+  const snapshotStrips   = useStore((s) => s.snapshotStrips);
+  const undo             = useStore((s) => s.undo);
+  const redo             = useStore((s) => s.redo);
+  const sceneMode        = useStore((s) => s.sceneMode);
+  const sceneLayers      = useStore((s) => s.sceneLayers);
   const updateSceneLayer = useStore((s) => s.updateSceneLayer);
+  const canvasWidth      = useStore((s) => s.canvasWidth);
+  const canvasHeight     = useStore((s) => s.canvasHeight);
+  const appMode          = useStore((s) => s.appMode);
+  const setAppMode       = useStore((s) => s.setAppMode);
 
   const [drawingLayerId, setDrawingLayerId] = useState<string | null>(null);
+
+  // Clear selection and drawing mode when switching to Perform
+  useEffect(() => {
+    if (appMode === 'perform') {
+      setSelectedStrips([]);
+      setDrawingLayerId(null);
+    }
+  }, [appMode, setSelectedStrips]);
+
+  // Native Edit menu → undo / redo
+  useEffect(() => {
+    const api = (window as any).electronAPI;
+    if (!api?.onMenuUndo) return;
+    const offUndo = api.onMenuUndo(() => undo());
+    const offRedo = api.onMenuRedo(() => redo());
+    return () => { offUndo?.(); offRedo?.(); };
+  }, [undo, redo]);
 
   // Clear drawing mode if the layer is deleted
   useEffect(() => {
@@ -49,14 +70,16 @@ export default function App() {
     updateSceneLayer(layerId, { mask: { ...layer.mask, points } });
   }, [sceneLayers, updateSceneLayer]);
 
-  const stripsRef = useRef(strips);
-  const selectedIdsRef = useRef(selectedIds);
-  const outputRef = useRef(output);
+  const stripsRef          = useRef(strips);
+  const selectedIdsRef     = useRef(selectedIds);
+  const outputRef          = useRef(output);
   const effectShortcutsRef = useRef(effectShortcuts);
-  stripsRef.current = strips;
-  selectedIdsRef.current = selectedIds;
-  outputRef.current = output;
+  const appModeRef         = useRef(appMode);
+  stripsRef.current          = strips;
+  selectedIdsRef.current     = selectedIds;
+  outputRef.current          = output;
   effectShortcutsRef.current = effectShortcuts;
+  appModeRef.current         = appMode;
 
   const lastNudgeSnapshotRef = useRef(0);
 
@@ -65,6 +88,7 @@ export default function App() {
       const tag = (e.target as Element).tagName;
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
+      // Effect shortcuts work in both modes
       const matched = Object.entries(effectShortcutsRef.current).find(([, k]) => k === e.key);
       if (matched && !e.ctrlKey && !e.metaKey && !e.altKey) {
         setActiveEffect(matched[0]);
@@ -83,16 +107,8 @@ export default function App() {
           setSelectedStrips([]);
           break;
 
-        case 'Delete':
-        case 'Backspace':
-          for (const id of selectedIdsRef.current) removeStrip(id);
-          break;
-
-        case 'd':
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            for (const id of selectedIdsRef.current) duplicateStrip(id, uuid());
-          }
+        case 'g':
+          if (!e.ctrlKey && !e.metaKey && !e.altKey) toggleGrid();
           break;
 
         case 'z':
@@ -103,11 +119,23 @@ export default function App() {
           if (e.ctrlKey || e.metaKey) { e.preventDefault(); redo(); }
           break;
 
-        case 'g':
-          if (!e.ctrlKey && !e.metaKey && !e.altKey) toggleGrid();
+        // Edit-mode only actions
+        case 'Delete':
+        case 'Backspace':
+          if (appModeRef.current !== 'edit') break;
+          for (const id of selectedIdsRef.current) removeStrip(id);
+          break;
+
+        case 'd':
+          if (appModeRef.current !== 'edit') break;
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            for (const id of selectedIdsRef.current) duplicateStrip(id, uuid());
+          }
           break;
 
         case 'a':
+          if (appModeRef.current !== 'edit') break;
           if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
             setSelectedStrips(stripsRef.current.map((s) => s.id));
@@ -118,6 +146,7 @@ export default function App() {
         case 'ArrowRight':
         case 'ArrowUp':
         case 'ArrowDown': {
+          if (appModeRef.current !== 'edit') break;
           const ids = selectedIdsRef.current;
           if (!ids.length) break;
           e.preventDefault();
@@ -150,13 +179,15 @@ export default function App() {
     [updateStrip]
   );
 
+  const isEditMode = appMode === 'edit';
+
   return (
     <div className="app-layout">
-      <Toolbar />
+      <Toolbar appMode={appMode} setAppMode={setAppMode} />
       <div className="main-area">
-        {sceneMode
-          ? <ScenePanel drawingLayerId={drawingLayerId} setDrawingLayerId={setDrawingLayerId} />
-          : <FixturePanel />
+        {isEditMode
+          ? <FixturePanel />
+          : <PerformPanel drawingLayerId={drawingLayerId} setDrawingLayerId={setDrawingLayerId} />
         }
         <div className="canvas-wrap">
           <PixelCanvas
@@ -178,9 +209,12 @@ export default function App() {
             sceneLayers={sceneLayers}
             drawingLayerId={drawingLayerId}
             onAddPolygonPoint={handleAddPolygonPoint}
+            canvasWidth={canvasWidth}
+            canvasHeight={canvasHeight}
+            readOnly={!isEditMode}
           />
         </div>
-        <PropertiesPanel />
+        {isEditMode && <PropertiesPanel />}
       </div>
     </div>
   );

@@ -32,20 +32,22 @@ export function EffectParams() {
         return (
           <label key={key} className="ep-item">
             <span className="ep-label">{paramDef.label}</span>
-            <input
-              type="range"
-              className="ep-range"
-              min={paramDef.min}
-              max={paramDef.max}
-              step={paramDef.step}
-              value={value as number}
-              onChange={(e) => setEffectParam(activeEffect, key, Number(e.target.value))}
-            />
-            <span className="ep-value">
-              {(paramDef.step ?? 1) < 1
-                ? Number(value).toFixed(1)
-                : Math.round(value as number)}
-            </span>
+            <div className="ep-range-row">
+              <input
+                type="range"
+                className="ep-range"
+                min={paramDef.min}
+                max={paramDef.max}
+                step={paramDef.step}
+                value={value as number}
+                onChange={(e) => setEffectParam(activeEffect, key, Number(e.target.value))}
+              />
+              <span className="ep-value">
+                {(paramDef.step ?? 1) < 1
+                  ? Number(value).toFixed(1)
+                  : Math.round(value as number)}
+              </span>
+            </div>
           </label>
         );
       })}
