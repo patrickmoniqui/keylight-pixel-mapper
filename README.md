@@ -6,6 +6,30 @@ Built for [KeyLight](https://github.com/djmoneykey/keylight) hardware (WLED-comp
 
 ---
 
+## Screenshots
+
+**Edit mode** — place fixtures on the canvas and set universe/channel assignments
+
+![Edit mode](docs/screenshots/edit-mode.png)
+
+**Effects panel** — 30+ real-time GLSL shaders with per-effect parameter controls
+
+![Effects panel](docs/screenshots/perform-mode.png)
+
+**Scene mode** — multi-scene compositor with named scenes, layer stacks, blend modes, and masks
+
+![Scene mode](docs/screenshots/scene-mode.png)
+
+**Fixture library** — built-in presets for KeyLight, WS2812B, SK6812, APA102, PAR LEDs, and LED bars
+
+![Fixture library](docs/screenshots/fixture-library.png)
+
+**Open Fixture Library browser** — search and add from 20,000+ community fixtures with auto-detected channel order
+
+![OFL browser](docs/screenshots/ofl-browser.png)
+
+---
+
 ## Features
 
 - **WebGL2 rendering** — 30+ GLSL effects rendered at full GPU speed
